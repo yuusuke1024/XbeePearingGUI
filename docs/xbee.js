@@ -47,7 +47,7 @@ export function sanitizeHex32(value) {
   if (!/^[0-9A-F]{1,8}$/.test(normalized)) {
     throw new Error("SL/DL に使用する値は 1〜8 桁の16進数で指定してください。");
   }
-  return normalized;
+  return normalized.padStart(8, "0");
 }
 
 /**

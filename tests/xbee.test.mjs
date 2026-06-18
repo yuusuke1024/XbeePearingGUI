@@ -122,8 +122,11 @@ test("normalizePanId は 1〜16 桁の16進数のみを受け付ける", () => {
   assert.throws(() => normalizePanId("ZZZZ"), /PAN ID/);
 });
 
-test("sanitizeHex32 は 1〜8 桁の16進数のみを受け付ける", () => {
-  assert.equal(sanitizeHex32("00ab12"), "00AB12");
+test("sanitizeHex32 は 1〜8 桁の16進数のみを受け付け、8桁にゼロパディングする", () => {
+  assert.equal(sanitizeHex32("00ab12"), "0000AB12");
+  assert.equal(sanitizeHex32("418CDC"), "00418CDC");
+  assert.equal(sanitizeHex32("4"), "00000004");
+  assert.equal(sanitizeHex32("0xDEADBEEF"), "DEADBEEF");
   assert.throws(() => sanitizeHex32("0x123456789"), /SL\/DL/);
   assert.throws(() => sanitizeHex32("xyz"), /SL\/DL/);
 });
@@ -309,7 +312,7 @@ test("readSerialLow は \\r 終端なしの値応答でも成功する", async (
   const { session, port } = await openTestSession([
     { command: "ATSL\r", chunks: [{ text: "418CDC" }] }
   ]);
-  assert.equal(await session.readSerialLow(), "418CDC");
+  assert.equal(await session.readSerialLow(), "00418CDC");
   assert.deepEqual(port.writer.writes, ["ATSL\r"]);
   await session.close();
 });
@@ -318,7 +321,7 @@ test("readSerialLow は値が分割到着しても完全な値を返す", async 
   const { session } = await openTestSession([
     { command: "ATSL\r", chunks: [{ text: "4" }, { text: "18CDC\r", delayMs: 1 }] }
   ]);
-  assert.equal(await session.readSerialLow(), "418CDC");
+  assert.equal(await session.readSerialLow(), "00418CDC");
   await session.close();
 });
 
