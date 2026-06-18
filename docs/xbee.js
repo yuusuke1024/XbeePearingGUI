@@ -2,6 +2,7 @@ const GUARD_TIME_MS = 1100;
 const ENTER_COMMAND_TIMEOUT_MS = 2500;
 const COMMAND_TIMEOUT_MS = 2500;
 const CLOSE_TIMEOUT_MS = 1000;
+const VALUE_SETTLE_TIMEOUT_MS = 80;
 
 /**
  * @param {string} value
@@ -98,13 +99,31 @@ function delay(ms) {
   });
 }
 
+/**
+ * @param {number} deadline
+ * @param {number | null} settleDeadline
+ * @returns {number}
+ */
+function computeWaitMs(deadline, settleDeadline) {
+  const now = Date.now();
+  const candidates = [deadline - now];
+  if (settleDeadline !== null) {
+    candidates.push(settleDeadline - now);
+  }
+  return Math.max(0, Math.min(...candidates));
+}
+
 export class XBeeSerialSession {
   /**
    * @param {SerialPort} port
    * @param {{
    *   baudRate: number,
    *   name: string,
-   *   logger?: (message: string) => void
+   *   logger?: (message: string) => void,
+   *   commandTimeoutMs?: number,
+   *   enterCommandTimeoutMs?: number,
+   *   closeTimeoutMs?: number,
+   *   valueSettleTimeoutMs?: number
    * }} options
    */
   constructor(port, options) {
@@ -118,6 +137,10 @@ export class XBeeSerialSession {
     this.encoder = new TextEncoder();
     this.buffer = "";
     this.isOpen = false;
+    this.commandTimeoutMs = options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS;
+    this.enterCommandTimeoutMs = options.enterCommandTimeoutMs ?? ENTER_COMMAND_TIMEOUT_MS;
+    this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
+    this.valueSettleTimeoutMs = options.valueSettleTimeoutMs ?? VALUE_SETTLE_TIMEOUT_MS;
   }
 
   async open() {
@@ -151,7 +174,7 @@ export class XBeeSerialSession {
       tasks.push(
         Promise.race([
           this.reader.cancel().catch(() => {}),
-          delay(CLOSE_TIMEOUT_MS)
+          delay(this.closeTimeoutMs)
         ]).then(() => {
           this.reader?.releaseLock();
           this.reader = null;
@@ -184,7 +207,7 @@ export class XBeeSerialSession {
     this.log("コマンドモードへ移行します");
     await delay(GUARD_TIME_MS);
     await this.writeRaw("+++");
-    await this.expectOk(ENTER_COMMAND_TIMEOUT_MS, "コマンドモード移行");
+    await this.expectOk(this.enterCommandTimeoutMs, "コマンドモード移行");
   }
 
   /**
@@ -216,7 +239,7 @@ export class XBeeSerialSession {
     this.log(`${options.label} を送信します`);
     this.buffer = "";
     await this.writeRaw(command);
-    const lines = await this.readResponse(options.label, COMMAND_TIMEOUT_MS, {
+    const lines = await this.readResponse(options.label, this.commandTimeoutMs, {
       acceptValue: options.expectValue
     });
     const analysis = analyzeResponseLines(lines);
@@ -272,38 +295,57 @@ export class XBeeSerialSession {
     }
 
     const deadline = Date.now() + timeoutMs;
+    let settleDeadline = null;
     let state = { lines: [], remainder: this.buffer };
     this.buffer = "";
 
     while (Date.now() < deadline) {
-      const { value, done } = await Promise.race([
-        this.reader.read(),
-        delay(Math.max(0, deadline - Date.now())).then(() => ({ value: undefined, done: false, timeout: true }))
+      const waitMs = computeWaitMs(deadline, settleDeadline);
+      const result = await Promise.race([
+        this.reader.read().then((readResult) => ({ kind: "read", ...readResult })),
+        delay(waitMs).then(() => ({ kind: "timeout" }))
       ]);
 
-      if (done) {
-        break;
-      }
-
-      if (!value) {
+      if (result.kind === "timeout") {
+        const analysis = analyzeResponseLines(state.lines);
+        if (options.acceptValue && analysis.valueLine) {
+          this.buffer = state.remainder;
+          return state.lines;
+        }
         continue;
       }
 
-      state = appendResponseChunk(state, this.decoder.decode(value, { stream: true }));
-      const analysis = analyzeResponseLines(state.lines);
-
-      if (options.acceptValue && analysis.valueLine) {
-        this.buffer = state.remainder;
-        return state.lines;
+      if (result.done) {
+        break;
       }
+
+      if (!result.value) {
+        continue;
+      }
+
+      state = appendResponseChunk(state, this.decoder.decode(result.value, { stream: true }));
+      const analysis = analyzeResponseLines(state.lines);
 
       if (analysis.hasOk) {
         this.buffer = state.remainder;
         return state.lines;
       }
+
+      if (options.acceptValue && analysis.valueLine && settleDeadline === null) {
+        settleDeadline = Date.now() + this.valueSettleTimeoutMs;
+      }
+    }
+
+    const finalAnalysis = analyzeResponseLines(state.lines);
+    if (options.acceptValue && finalAnalysis.valueLine) {
+      this.buffer = state.remainder;
+      return state.lines;
     }
 
     this.buffer = state.remainder;
+    if (!options.acceptValue && finalAnalysis.valueLine) {
+      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。`);
+    }
     throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。`);
   }
 
