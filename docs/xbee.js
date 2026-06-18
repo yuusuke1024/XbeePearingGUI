@@ -228,6 +228,7 @@ export class XBeeSerialSession {
     await delay(GUARD_TIME_MS);
     this.clearResponseBuffer();
     await this.writeRaw("+++");
+    await delay(GUARD_TIME_MS);
     await this.expectOk(this.enterCommandTimeoutMs, "コマンドモード移行");
   }
 
