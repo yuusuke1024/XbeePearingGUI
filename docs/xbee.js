@@ -92,6 +92,18 @@ export function normalizePanId(input) {
 }
 
 /**
+ * @param {number} index
+ * @returns {string}
+ */
+function deviceIndexToName(index) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  if (index >= 0 && index < alphabet.length) {
+    return `XBee ${alphabet[index]}`;
+  }
+  return `XBee ${index + 1}`;
+}
+
+/**
  * @param {{ panId: string, coordinator: "A"|"B", baudRate: number }} options
  * @returns {{
  *   normalizedPanId: string,
@@ -116,6 +128,45 @@ export function buildPairingPlan({ panId, coordinator, baudRate }) {
     baudRate,
     commandsForA: [`ATID${normalizedPanId}\r`, `ATCE${roles.A}\r`, `ATBD${bdCode}\r`],
     commandsForB: [`ATID${normalizedPanId}\r`, `ATCE${roles.B}\r`, `ATBD${bdCode}\r`]
+  };
+}
+
+/**
+ * @param {{ panId: string, coordinatorIndex: number, baudRate: number, deviceCount: number }} options
+ * @returns {{
+ *   normalizedPanId: string,
+ *   roles: ("1"|"0")[],
+ *   baudRate: number,
+ *   apiMode: "1",
+ *   commandsForDevices: string[][]
+ * }}
+ */
+export function buildApiNetworkPlan({ panId, coordinatorIndex, baudRate, deviceCount }) {
+  const normalizedPanId = normalizePanId(panId);
+  const count = Number(deviceCount);
+  const coordinator = Number(coordinatorIndex);
+
+  if (!Number.isInteger(count) || count < 3) {
+    throw new Error("API モードでは 3 台以上の XBee を指定してください。");
+  }
+  if (!Number.isInteger(coordinator) || coordinator < 0 || coordinator >= count) {
+    throw new Error("Coordinator の選択が不正です。");
+  }
+
+  const bdCode = baudRateToAtbd(baudRate);
+  const roles = Array.from({ length: count }, (_, index) => (index === coordinator ? "1" : "0"));
+
+  return {
+    normalizedPanId,
+    roles,
+    baudRate,
+    apiMode: "1",
+    commandsForDevices: roles.map((role) => [
+      `ATID${normalizedPanId}\r`,
+      `ATCE${role}\r`,
+      `ATBD${bdCode}\r`,
+      "ATAP1\r"
+    ])
   };
 }
 
@@ -714,6 +765,87 @@ export async function openCommandModeSession(port, options) {
   }
 
   throw new Error(`${options.name}: ${candidates.join(", ")} bps のいずれでもコマンドモードに入れませんでした。XBee の電源、配線、AT/API モード設定を確認してください。`);
+}
+
+/**
+ * @param {{
+ *   ports: SerialPort[],
+ *   baudRate: number,
+ *   panId: string,
+ *   coordinatorIndex: number,
+ *   names?: string[],
+ *   logger?: (message: string) => void
+ * }} options
+ */
+export async function configureApiNetwork(options) {
+  const logger = options.logger ?? (() => {});
+  const plan = buildApiNetworkPlan({
+    panId: options.panId,
+    coordinatorIndex: options.coordinatorIndex,
+    baudRate: options.baudRate,
+    deviceCount: options.ports.length
+  });
+  const baudRateCandidates = buildBaudRateCandidates(options.baudRate);
+  /** @type {(XBeeSerialSession | null)[]} */
+  const sessions = Array.from({ length: options.ports.length }, () => null);
+
+  try {
+    logger(`[SCAN] API モード設定対象: ${options.ports.length} 台`);
+    logger(`[SCAN] UART ボーレート候補: ${baudRateCandidates.join(", ")} bps`);
+
+    for (let index = 0; index < options.ports.length; index += 1) {
+      const name = options.names?.[index] ?? deviceIndexToName(index);
+      sessions[index] = await openCommandModeSession(options.ports[index], {
+        name,
+        candidates: baudRateCandidates,
+        logger
+      });
+      logger(`[SCAN] ${name}=${sessions[index]?.baudRate} bps で設定通信します`);
+    }
+
+    const serialLows = [];
+    for (let index = 0; index < sessions.length; index += 1) {
+      const session = sessions[index];
+      if (!session) {
+        throw new Error(`${options.names?.[index] ?? deviceIndexToName(index)} のセッションを開始できませんでした。`);
+      }
+      serialLows[index] = await session.readSerialLow();
+    }
+
+    logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.names?.[options.coordinatorIndex] ?? deviceIndexToName(options.coordinatorIndex)} / 通信ボーレート=${options.baudRate} bps / AP=1`);
+    logger("[PLAN] API モードでは宛先を API フレームで指定するため、DL は変更しません");
+
+    for (let index = 0; index < sessions.length; index += 1) {
+      const session = sessions[index];
+      if (!session) {
+        throw new Error(`${options.names?.[index] ?? deviceIndexToName(index)} のセッションを開始できませんでした。`);
+      }
+      const roleLabel = plan.roles[index] === "1" ? "Coordinator" : "Router";
+      logger(`[PLAN] ${options.names?.[index] ?? deviceIndexToName(index)} SL=${serialLows[index]} / ${roleLabel} / AP=1`);
+      for (const command of plan.commandsForDevices[index]) {
+        await session.sendOkCommand(command, command.trim());
+      }
+    }
+
+    for (const session of sessions) {
+      await session?.sendOkCommand("ATWR\r", "ATWR");
+    }
+    for (const session of sessions) {
+      await session?.sendOkCommand("ATCN\r", "ATCN");
+    }
+
+    logger("[DONE] API モード設定の書き込みが完了しました");
+    logger(`[NOTE] AP=1 にした後は XBee の UART 通信が API フレーム形式になります。変更を有効にするため、すべての XBee を再起動（電源 OFF/ON）してください`);
+    return {
+      normalizedPanId: plan.normalizedPanId,
+      serialLows,
+      roles: plan.roles,
+      baudRate: options.baudRate,
+      apiMode: plan.apiMode
+    };
+  } finally {
+    await Promise.allSettled(sessions.map((session) => session?.close()));
+  }
 }
 
 /**

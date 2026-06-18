@@ -1,6 +1,6 @@
 # XbeePearingGUI
 
-XCTU の代替として、XBee 2 台の最低限のペアリング設定だけを行う静的 Web アプリです。Chrome / Edge の Web Serial API を使い、`ID`、`CE`、`DL`、`BD` を書き込みます。
+XCTU の代替として、XBee の最低限の通信設定を行う静的 Web アプリです。Chrome / Edge の Web Serial API を使い、通常の1対1ペアリングと、3 台以上を対象にした API モード設定に対応します。
 
 ## Quick start
 
@@ -18,13 +18,16 @@ Chrome または Edge で GitHub Pages URL を開く
 7. `ペアリング設定を書き込む` を実行する
 8. 右側のログで `SL` 読み取り結果と各 AT コマンドの成否を確認する
 
+API モードを使う場合は、`API モードを ON にする (ATAP=1)` にチェックを入れ、`XBee を追加` から 3 台以上のポートを選択して実行する。
+
 ## このツールが行うこと
 
-- 変更する設定: `ID`, `CE`, `DL`, `BD`
+- 通常の1対1ペアリングで変更する設定: `ID`, `CE`, `DL`, `BD`
+- API モードで変更する設定: `ID`, `CE`, `BD`, `AP=1`
 - 読み取る設定: `SL`
 - 保存 / 終了: `WR`, `CN`
 
-Function Set / Firmware は変更しません。`ZIGBEETHReg` のまま使う前提です。`DH`、`BD`、`AP`、`SM`、`NI`、`EE`、`KY`、`RE`、`FR` など、上記以外の設定は変更しません。
+Function Set / Firmware は変更しません。`ZIGBEETHReg` のまま使う前提です。`DH`、`SM`、`NI`、`EE`、`KY`、`RE`、`FR` など、上記以外の設定は変更しません。
 
 ## 制約と注意
 
@@ -33,6 +36,8 @@ Function Set / Firmware は変更しません。`ZIGBEETHReg` のまま使う前
 - 実機が必要です。`npm test` では純粋関数のみを確認し、シリアル通信の実機検証は行いません。
 - 各 XBee の `SL` は読み取り専用です。このツールは各 `SL` を読み、相手側の `DL` にだけ書き込みます。
 - Digi の 64bit 宛先は本来 `DH + DL` です。このツールはユーザー指定により `DH` を書き換えません。そのため、既存の `DH` が 0 以外だと通信できない可能性があります。
+- API モードでは宛先を API フレームで指定するため、このツールは `DL` を変更しません。
+- `AP=1` に設定した後は XBee の UART 通信が API フレーム形式になります。以後 AT コマンドモード用の接続テストには応答しない場合があります。
 
 ## ローカル確認
 

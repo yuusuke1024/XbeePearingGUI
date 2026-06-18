@@ -24,7 +24,7 @@
         <form id="pairingForm" class="form-grid">
           <fieldset class="field-group">
             <legend>ポート選択</legend>
-            <div class="device-grid">
+            <div id="deviceGrid" class="device-grid">
               <section class="device-card" aria-labelledby="device-a-title">
                 <div class="device-card-header">
                   <h2 id="device-a-title">XBee A</h2>
@@ -46,6 +46,16 @@
               </section>
             </div>
           </fieldset>
+
+          <label class="mode-toggle">
+            <input id="apiMode" name="apiMode" type="checkbox" />
+            <span>API モードを ON にする (ATAP=1)</span>
+          </label>
+
+          <div id="apiDeviceControls" class="api-device-controls" hidden>
+            <p class="hint">API モードでは 3 台以上の XBee を同じ PAN ID に設定します。DL は変更せず、宛先は API フレームで指定します。</p>
+            <button id="addApiDeviceButton" class="action-button" type="button">XBee を追加</button>
+          </div>
 
           <div class="field-row">
             <label class="field">
@@ -100,11 +110,12 @@
         </div>
         <ul class="notes-list">
           <li>PC と XBee の設定通信は、XBee の現在の UART ボーレートを候補から自動検出して行います。</li>
-          <li>変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code>、<code>BD</code> です。<code>BD</code> は XBee 同士が接続機器と通信するボーレートです。</li>
-          <li><code>SL</code> は読み取り専用です。相手側の <code>SL</code> を自動で <code>DL</code> に書き込みます。</li>
+          <li>通常の1対1ペアリングで変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code>、<code>BD</code> です。<code>BD</code> は XBee 同士が接続機器と通信するボーレートです。</li>
+          <li>API モードでは 3 台以上を対象に <code>ID</code>、<code>CE</code>、<code>BD</code>、<code>AP=1</code> を書き込みます。<code>DL</code> は変更しません。</li>
+          <li><code>SL</code> は読み取り専用です。通常の1対1ペアリングでは相手側の <code>SL</code> を自動で <code>DL</code> に書き込みます。</li>
           <li><code>DH</code> は変更しません。既存値が 0 以外だと通信できない可能性があります。</li>
           <li>Function Set / Firmware は変更しません。<code>ZIGBEETHReg</code> のまま使ってください。</li>
-          <li><code>BD</code> の変更は <code>ATWR</code> 書き込み後に XBee を再起動（電源 OFF/ON）すると有効になります。</li>
+          <li><code>BD</code> や <code>AP</code> の変更は <code>ATWR</code> 書き込み後に XBee を再起動（電源 OFF/ON）すると有効になります。</li>
         </ul>
       </section>
     </main>

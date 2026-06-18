@@ -6,6 +6,7 @@ import {
   analyzeResponseState,
   appendResponseChunk,
   baudRateToAtbd,
+  buildApiNetworkPlan,
   buildBaudRateCandidates,
   buildPairingPlan,
   extractCompleteLines,
@@ -168,6 +169,26 @@ test("buildPairingPlan は Coordinator=B の計画を返す", () => {
 
 test("buildPairingPlan は不正な Coordinator を拒否する", () => {
   assert.throws(() => buildPairingPlan({ panId: "1234", coordinator: /** @type {any} */ ("C"), baudRate: 9600 }), /Coordinator/);
+});
+
+test("buildApiNetworkPlan は 3 台以上の API モード設定計画を返す", () => {
+  const plan = buildApiNetworkPlan({ panId: "0x77", coordinatorIndex: 1, baudRate: 9600, deviceCount: 3 });
+  assert.equal(plan.normalizedPanId, "77");
+  assert.equal(plan.apiMode, "1");
+  assert.deepEqual(plan.roles, ["0", "1", "0"]);
+  assert.deepEqual(plan.commandsForDevices, [
+    ["ATID77\r", "ATCE0\r", "ATBD3\r", "ATAP1\r"],
+    ["ATID77\r", "ATCE1\r", "ATBD3\r", "ATAP1\r"],
+    ["ATID77\r", "ATCE0\r", "ATBD3\r", "ATAP1\r"]
+  ]);
+});
+
+test("buildApiNetworkPlan は 2 台以下を拒否する", () => {
+  assert.throws(() => buildApiNetworkPlan({ panId: "1234", coordinatorIndex: 0, baudRate: 9600, deviceCount: 2 }), /3 台以上/);
+});
+
+test("buildApiNetworkPlan は範囲外の Coordinator を拒否する", () => {
+  assert.throws(() => buildApiNetworkPlan({ panId: "1234", coordinatorIndex: 3, baudRate: 9600, deviceCount: 3 }), /Coordinator/);
 });
 
 test("extractCompleteLines は CR/LF 混在の完全な行だけを返す", () => {

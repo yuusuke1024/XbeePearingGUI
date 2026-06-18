@@ -1,4 +1,7 @@
-import { findWorkingBaudRate, normalizePanId, pairXBees } from "./xbee.js";
+import { configureApiNetwork, findWorkingBaudRate, normalizePanId, pairXBees } from "./xbee.js";
+
+const MAX_API_DEVICE_COUNT = 12;
+const DEVICE_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 const form = /** @type {HTMLFormElement} */ (document.getElementById("pairingForm"));
 const runButton = /** @type {HTMLButtonElement} */ (document.getElementById("runButton"));
@@ -8,18 +11,18 @@ const selectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementB
 const selectPortBButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortBButton"));
 const disconnectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementById("disconnectPortAButton"));
 const disconnectPortBButton = /** @type {HTMLButtonElement} */ (document.getElementById("disconnectPortBButton"));
+const apiModeCheckbox = /** @type {HTMLInputElement} */ (document.getElementById("apiMode"));
+const apiDeviceControls = /** @type {HTMLDivElement} */ (document.getElementById("apiDeviceControls"));
+const addApiDeviceButton = /** @type {HTMLButtonElement} */ (document.getElementById("addApiDeviceButton"));
+const deviceGrid = /** @type {HTMLDivElement} */ (document.getElementById("deviceGrid"));
 const baudRateSelect = /** @type {HTMLSelectElement} */ (document.getElementById("baudRate"));
 const panIdInput = /** @type {HTMLInputElement} */ (document.getElementById("panId"));
 const coordinatorSelect = /** @type {HTMLSelectElement} */ (document.getElementById("coordinator"));
 const supportBadge = /** @type {HTMLSpanElement} */ (document.getElementById("supportBadge"));
 const supportMessage = /** @type {HTMLParagraphElement} */ (document.getElementById("supportMessage"));
 const logOutput = /** @type {HTMLPreElement} */ (document.getElementById("logOutput"));
-const portALabel = /** @type {HTMLParagraphElement} */ (document.getElementById("portALabel"));
-const portBLabel = /** @type {HTMLParagraphElement} */ (document.getElementById("portBLabel"));
-const portAState = /** @type {HTMLSpanElement} */ (document.getElementById("portAState"));
-const portBState = /** @type {HTMLSpanElement} */ (document.getElementById("portBState"));
 
-/** @type {{ A: SerialPort | null, B: SerialPort | null }} */
+/** @type {Record<string, SerialPort | null>} */
 const selectedPorts = {
   A: null,
   B: null
@@ -27,6 +30,24 @@ const selectedPorts = {
 
 function supportsWebSerial() {
   return "serial" in navigator && window.isSecureContext;
+}
+
+function isApiModeEnabled() {
+  return apiModeCheckbox.checked;
+}
+
+/**
+ * @returns {string[]}
+ */
+function getActiveDeviceIds() {
+  return isApiModeEnabled() ? Object.keys(selectedPorts) : ["A", "B"];
+}
+
+/**
+ * @returns {string[]}
+ */
+function getSelectedActiveDeviceIds() {
+  return getActiveDeviceIds().filter((id) => selectedPorts[id]);
 }
 
 function appendLog(message) {
@@ -49,20 +70,32 @@ function setSupportState() {
 }
 
 /**
- * @param {"A"|"B"} side
+ * @param {string} side
+ */
+function getDeviceElements(side) {
+  return {
+    label: /** @type {HTMLParagraphElement} */ (document.getElementById(`port${side}Label`)),
+    state: /** @type {HTMLSpanElement} */ (document.getElementById(`port${side}State`)),
+    selectButton: /** @type {HTMLButtonElement} */ (document.getElementById(`selectPort${side}Button`)),
+    disconnectButton: /** @type {HTMLButtonElement} */ (document.getElementById(`disconnectPort${side}Button`))
+  };
+}
+
+/**
+ * @param {string} side
  * @param {SerialPort} port
  */
 function setPort(side, port) {
   selectedPorts[side] = port;
   const info = describePort(port);
-  const label = side === "A" ? portALabel : portBLabel;
-  const state = side === "A" ? portAState : portBState;
-  const disconnectButton = side === "A" ? disconnectPortAButton : disconnectPortBButton;
-  label.textContent = info;
-  state.textContent = "選択済み";
-  state.className = "port-state is-selected";
-  disconnectButton.disabled = false;
-  appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポートを選択しました: ${info}`);
+  const elements = getDeviceElements(side);
+  elements.label.textContent = info;
+  elements.state.textContent = "選択済み";
+  elements.state.className = "port-state is-selected";
+  elements.disconnectButton.disabled = false;
+  appendLog(`${deviceLabel(side)} のポートを選択しました: ${info}`);
+  updateCoordinatorOptions();
+  setBusy(false);
 }
 
 /**
@@ -76,19 +109,33 @@ function describePort(port) {
   return `${usbVendorId} / ${usbProductId}`;
 }
 
+/**
+ * @param {string} side
+ * @returns {string}
+ */
+function deviceLabel(side) {
+  return `XBee ${side}`;
+}
+
 function setBusy(isBusy) {
-  const isPortASelected = selectedPorts.A !== null;
-  const isPortBSelected = selectedPorts.B !== null;
   runButton.disabled = isBusy || !supportsWebSerial();
   testConnectionButton.disabled = isBusy || !supportsWebSerial();
   clearLogButton.disabled = isBusy;
-  selectPortAButton.disabled = isBusy || !supportsWebSerial();
-  selectPortBButton.disabled = isBusy || !supportsWebSerial();
-  disconnectPortAButton.disabled = isBusy || !isPortASelected;
-  disconnectPortBButton.disabled = isBusy || !isPortBSelected;
+  apiModeCheckbox.disabled = isBusy;
+  addApiDeviceButton.disabled = isBusy || !supportsWebSerial() || !isApiModeEnabled() || Object.keys(selectedPorts).length >= MAX_API_DEVICE_COUNT;
   baudRateSelect.disabled = isBusy;
   panIdInput.disabled = isBusy;
   coordinatorSelect.disabled = isBusy;
+
+  for (const side of Object.keys(selectedPorts)) {
+    const elements = getDeviceElements(side);
+    elements.selectButton.disabled = isBusy || !supportsWebSerial();
+    elements.disconnectButton.disabled = isBusy || !selectedPorts[side];
+    const removeButton = /** @type {HTMLButtonElement | null} */ (document.getElementById(`removePort${side}Button`));
+    if (removeButton) {
+      removeButton.disabled = isBusy;
+    }
+  }
 }
 
 async function requestPort(side) {
@@ -102,19 +149,22 @@ async function requestPort(side) {
     setPort(side, port);
   } catch (error) {
     if (error instanceof DOMException && error.name === "NotFoundError") {
-      appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポート選択がキャンセルされました。`);
+      appendLog(`${deviceLabel(side)} のポート選択がキャンセルされました。`);
       return;
     }
     appendLog(`ポート選択に失敗しました: ${formatError(error)}`);
   }
 }
 
-/**
- * @param {"A"|"B"} side
- */
 async function testConnection() {
-  if (!selectedPorts.A || !selectedPorts.B) {
-    appendLog("XBee A と XBee B の両方のポートを選択してください。");
+  const activeIds = getSelectedActiveDeviceIds();
+  if (activeIds.length === 0) {
+    appendLog("接続テストする XBee のポートを選択してください。");
+    return;
+  }
+
+  if (!isApiModeEnabled() && activeIds.length < 2) {
+    appendLog("通常の1対1ペアリングでは XBee A と XBee B の両方のポートを選択してください。");
     return;
   }
 
@@ -122,27 +172,27 @@ async function testConnection() {
   appendLog("接続テストを開始します。XBee の現在の UART ボーレートを自動検出します。");
 
   try {
-    const foundA = await findWorkingBaudRate(selectedPorts.A, {
-      name: "XBee A",
-      logger: appendLog
-    });
-    const foundB = await findWorkingBaudRate(selectedPorts.B, {
-      name: "XBee B",
-      logger: appendLog
-    });
+    const results = [];
+    for (const side of activeIds) {
+      const found = await findWorkingBaudRate(/** @type {SerialPort} */ (selectedPorts[side]), {
+        name: deviceLabel(side),
+        logger: appendLog
+      });
+      results.push({ side, found });
+    }
 
-    if (foundA && foundB) {
-      appendLog(`[OK] XBee A は ${foundA} bps で応答しました`);
-      appendLog(`[OK] XBee B は ${foundB} bps で応答しました`);
-      appendLog("ペアリングを実行できます。");
+    for (const result of results) {
+      if (result.found) {
+        appendLog(`[OK] ${deviceLabel(result.side)} は ${result.found} bps で応答しました`);
+      } else {
+        appendLog(`[NG] ${deviceLabel(result.side)} から応答がありませんでした。電源・ケーブル、AT/API モード、UART ボーレート設定を確認してください。`);
+      }
+    }
+
+    if (results.every((result) => result.found)) {
+      appendLog("選択済みの XBee は設定を実行できます。");
     } else {
-      if (!foundA) {
-        appendLog(`[NG] XBee A から応答がありませんでした。電源・ケーブル、AT/API モード、UART ボーレート設定を確認してください。`);
-      }
-      if (!foundB) {
-        appendLog(`[NG] XBee B から応答がありませんでした。電源・ケーブル、AT/API モード、UART ボーレート設定を確認してください。`);
-      }
-      appendLog("XBee が API モードになっている可能性もあります。AT モードに設定してください。");
+      appendLog("すでに API モードの XBee は、この AT コマンド用テストに応答しない場合があります。");
     }
   } catch (error) {
     appendLog(`接続テストでエラー: ${formatError(error)}`);
@@ -165,41 +215,156 @@ async function disconnectPort(side) {
   try {
     if (port.readable && port.writable) {
       await port.close();
-      appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポートを閉じました`);
+      appendLog(`${deviceLabel(side)} のポートを閉じました`);
     }
   } catch (error) {
-    appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポート切断中にエラー: ${formatError(error)}`);
+    appendLog(`${deviceLabel(side)} のポート切断中にエラー: ${formatError(error)}`);
   }
 
   selectedPorts[side] = null;
-  const label = side === "A" ? portALabel : portBLabel;
-  const state = side === "A" ? portAState : portBState;
-  label.textContent = "ポート未選択";
-  state.textContent = "未選択";
-  state.className = "port-state";
+  const elements = getDeviceElements(side);
+  elements.label.textContent = "ポート未選択";
+  elements.state.textContent = "未選択";
+  elements.state.className = "port-state";
+  appendLog(`${deviceLabel(side)} の選択を解除しました`);
+  updateCoordinatorOptions();
   setBusy(false);
-  appendLog(`${side === "A" ? "XBee A" : "XBee B"} の選択を解除しました`);
+}
+
+function addApiDevice() {
+  const nextId = DEVICE_IDS.find((id) => !(id in selectedPorts));
+  if (!nextId) {
+    appendLog("追加できる XBee の上限に達しました。");
+    return;
+  }
+
+  selectedPorts[nextId] = null;
+  const section = document.createElement("section");
+  section.className = "device-card api-device-card";
+  section.id = `device${nextId}Card`;
+  section.setAttribute("aria-labelledby", `device-${nextId.toLowerCase()}-title`);
+  section.innerHTML = `
+    <div class="device-card-header">
+      <h2 id="device-${nextId.toLowerCase()}-title">${deviceLabel(nextId)}</h2>
+      <span id="port${nextId}State" class="port-state">未選択</span>
+    </div>
+    <button id="selectPort${nextId}Button" class="action-button" type="button">${deviceLabel(nextId)} のポートを選択</button>
+    <div class="device-actions">
+      <button id="disconnectPort${nextId}Button" class="ghost-button disconnect-button" type="button" disabled>接続を切る</button>
+      <button id="removePort${nextId}Button" class="ghost-button remove-button" type="button">削除</button>
+    </div>
+    <p id="port${nextId}Label" class="port-label">ポート未選択</p>
+  `;
+  deviceGrid.appendChild(section);
+
+  getDeviceElements(nextId).selectButton.addEventListener("click", async () => {
+    await requestPort(nextId);
+  });
+  getDeviceElements(nextId).disconnectButton.addEventListener("click", async () => {
+    await disconnectPort(nextId);
+  });
+  document.getElementById(`removePort${nextId}Button`)?.addEventListener("click", async () => {
+    await removeApiDevice(nextId);
+  });
+
+  updateApiModeUi();
+  updateCoordinatorOptions();
+  setBusy(false);
+  appendLog(`${deviceLabel(nextId)} を API モード用に追加しました。`);
+}
+
+/**
+ * @param {string} side
+ */
+async function removeApiDevice(side) {
+  if (side === "A" || side === "B") {
+    return;
+  }
+  await disconnectPort(side);
+  delete selectedPorts[side];
+  document.getElementById(`device${side}Card`)?.remove();
+  updateCoordinatorOptions();
+  setBusy(false);
+  appendLog(`${deviceLabel(side)} を削除しました。`);
+}
+
+function updateApiModeUi() {
+  const enabled = isApiModeEnabled();
+  apiDeviceControls.hidden = !enabled;
+  for (const card of document.querySelectorAll(".api-device-card")) {
+    card.toggleAttribute("hidden", !enabled);
+  }
+  runButton.textContent = enabled ? "API モード設定を書き込む" : "ペアリング設定を書き込む";
+  updateCoordinatorOptions();
+  setBusy(false);
+}
+
+function updateCoordinatorOptions() {
+  const previousValue = coordinatorSelect.value;
+  const ids = getActiveDeviceIds();
+  coordinatorSelect.textContent = "";
+
+  for (const id of ids) {
+    const option = document.createElement("option");
+    option.value = id;
+    if (isApiModeEnabled()) {
+      option.textContent = `${id} を Coordinator / 他を Router`;
+    } else if (id === "A") {
+      option.textContent = "A を Coordinator / B を Router";
+    } else {
+      option.textContent = "B を Coordinator / A を Router";
+    }
+    coordinatorSelect.appendChild(option);
+  }
+
+  if (ids.includes(previousValue)) {
+    coordinatorSelect.value = previousValue;
+  }
 }
 
 function validateInputs() {
-  if (!selectedPorts.A || !selectedPorts.B) {
-    throw new Error("XBee A と XBee B の両方のポートを選択してください。");
-  }
-
-  if (selectedPorts.A === selectedPorts.B) {
-    throw new Error("XBee A と XBee B に同じポートは使用できません。別々のポートを選択してください。");
-  }
-
   const panId = normalizePanId(panIdInput.value);
   const coordinator = coordinatorSelect.value;
-  if (coordinator !== "A" && coordinator !== "B") {
-    throw new Error("Coordinator の選択が不正です。");
+  const baudRate = Number(baudRateSelect.value);
+
+  if (!isApiModeEnabled()) {
+    if (!selectedPorts.A || !selectedPorts.B) {
+      throw new Error("通常の1対1ペアリングでは XBee A と XBee B の両方のポートを選択してください。");
+    }
+    if (selectedPorts.A === selectedPorts.B) {
+      throw new Error("XBee A と XBee B に同じポートは使用できません。別々のポートを選択してください。");
+    }
+    if (coordinator !== "A" && coordinator !== "B") {
+      throw new Error("Coordinator の選択が不正です。");
+    }
+
+    return {
+      mode: "pair",
+      panId,
+      coordinator,
+      baudRate
+    };
+  }
+
+  const selectedIds = getSelectedActiveDeviceIds();
+  if (selectedIds.length < 3) {
+    throw new Error("API モードでは 3 台以上の XBee ポートを選択してください。");
+  }
+  if (!selectedIds.includes(coordinator)) {
+    throw new Error("Coordinator には選択済みの XBee を指定してください。");
+  }
+  if (new Set(selectedIds.map((id) => selectedPorts[id])).size !== selectedIds.length) {
+    throw new Error("同じポートを複数の XBee に使用できません。別々のポートを選択してください。");
   }
 
   return {
+    mode: "api",
     panId,
     coordinator,
-    baudRate: Number(baudRateSelect.value)
+    coordinatorIndex: selectedIds.indexOf(coordinator),
+    baudRate,
+    ports: selectedIds.map((id) => /** @type {SerialPort} */ (selectedPorts[id])),
+    deviceIds: selectedIds
   };
 }
 
@@ -228,6 +393,15 @@ disconnectPortBButton.addEventListener("click", async () => {
   await disconnectPort("B");
 });
 
+apiModeCheckbox.addEventListener("change", () => {
+  updateApiModeUi();
+  appendLog(isApiModeEnabled() ? "API モード設定を ON にしました。3 台以上の XBee を選択できます。" : "通常の1対1ペアリングに戻しました。追加ノードは使用しません。");
+});
+
+addApiDeviceButton.addEventListener("click", () => {
+  addApiDevice();
+});
+
 testConnectionButton.addEventListener("click", async () => {
   await testConnection();
 });
@@ -240,16 +414,31 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   try {
-    const { panId, coordinator, baudRate } = validateInputs();
+    const inputs = validateInputs();
     setBusy(true);
-    appendLog("ペアリング処理を開始します。");
 
+    if (inputs.mode === "api") {
+      appendLog("API モード設定を開始します。");
+      const result = await configureApiNetwork({
+        ports: inputs.ports,
+        baudRate: inputs.baudRate,
+        panId: inputs.panId,
+        coordinatorIndex: inputs.coordinatorIndex,
+        names: inputs.deviceIds.map((id) => deviceLabel(id)),
+        logger: appendLog
+      });
+
+      appendLog(`完了: PAN ID=${result.normalizedPanId}, AP=${result.apiMode}, 台数=${result.serialLows.length}`);
+      return;
+    }
+
+    appendLog("ペアリング処理を開始します。");
     const result = await pairXBees({
       portA: selectedPorts.A,
       portB: selectedPorts.B,
-      baudRate,
-      panId,
-      coordinator,
+      baudRate: inputs.baudRate,
+      panId: inputs.panId,
+      coordinator: inputs.coordinator,
       logger: appendLog
     });
 
@@ -262,5 +451,5 @@ form.addEventListener("submit", async (event) => {
 });
 
 setSupportState();
-setBusy(false);
-appendLog("準備完了。XBee 2 台のポートを選択してから実行してください。");
+updateApiModeUi();
+appendLog("準備完了。通常は XBee 2 台、API モードでは 3 台以上のポートを選択してから実行してください。");
