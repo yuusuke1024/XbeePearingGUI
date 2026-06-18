@@ -54,8 +54,10 @@ body {
 }
 
 .panel-log {
+  display: flex;
+  flex-direction: column;
   grid-area: log;
-  min-height: 520px;
+  height: 520px;
 }
 
 .panel-notes {
@@ -257,8 +259,8 @@ input:disabled {
 }
 
 .log-output {
-  height: calc(100% - 64px);
-  min-height: 420px;
+  flex: 1;
+  min-height: 0;
   margin: 0;
   padding: 14px;
   overflow: auto;
