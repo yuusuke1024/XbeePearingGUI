@@ -127,6 +127,23 @@ export function analyzeResponseLines(lines) {
 }
 
 /**
+ * @param {string[]} lines
+ * @param {string} remainder
+ * @returns {{ hasOk: boolean, valueLine: string | null, valueFromRemainder: boolean }}
+ */
+export function analyzeResponseState(lines, remainder) {
+  const analysis = analyzeResponseLines(lines);
+  if (analysis.valueLine) {
+    return { ...analysis, valueFromRemainder: false };
+  }
+  const trimmed = remainder.trim();
+  if (trimmed && !/^OK$/i.test(trimmed)) {
+    return { hasOk: analysis.hasOk, valueLine: trimmed, valueFromRemainder: true };
+  }
+  return { hasOk: analysis.hasOk, valueLine: null, valueFromRemainder: false };
+}
+
+/**
  * @param {number} ms
  * @returns {Promise<void>}
  */
@@ -363,19 +380,22 @@ export class XBeeSerialSession {
 
     while (Date.now() < deadline) {
       const waitMs = computeWaitMs(deadline, settleDeadline);
-      const analysis = analyzeResponseLines(this.responseLines);
+      const state = analyzeResponseState(this.responseLines, this.responseRemainder);
 
-      if (analysis.hasOk) {
+      if (state.hasOk) {
         const lines = this.consumeResponseLines();
         this.needsInputFlush = false;
         return lines;
       }
 
-      if (options.acceptValue && analysis.valueLine && settleDeadline === null) {
+      if (options.acceptValue && state.valueLine && settleDeadline === null) {
         settleDeadline = Date.now() + this.valueSettleTimeoutMs;
       }
 
-      if (options.acceptValue && analysis.valueLine && settleDeadline !== null && Date.now() >= settleDeadline) {
+      if (options.acceptValue && state.valueLine && settleDeadline !== null && Date.now() >= settleDeadline) {
+        if (state.valueFromRemainder) {
+          this.promoteRemainderToLine();
+        }
         const lines = this.consumeResponseLines();
         this.needsInputFlush = true;
         return lines;
@@ -383,8 +403,11 @@ export class XBeeSerialSession {
 
       const didReceive = await this.waitForInput(waitMs);
       if (!didReceive) {
-        const latest = analyzeResponseLines(this.responseLines);
+        const latest = analyzeResponseState(this.responseLines, this.responseRemainder);
         if (options.acceptValue && latest.valueLine) {
+          if (latest.valueFromRemainder) {
+            this.promoteRemainderToLine();
+          }
           const lines = this.consumeResponseLines();
           this.needsInputFlush = !latest.hasOk;
           return lines;
@@ -392,14 +415,17 @@ export class XBeeSerialSession {
       }
     }
 
-    const finalAnalysis = analyzeResponseLines(this.responseLines);
-    if (options.acceptValue && finalAnalysis.valueLine) {
+    const finalState = analyzeResponseState(this.responseLines, this.responseRemainder);
+    if (options.acceptValue && finalState.valueLine) {
+      if (finalState.valueFromRemainder) {
+        this.promoteRemainderToLine();
+      }
       const lines = this.consumeResponseLines();
-      this.needsInputFlush = !finalAnalysis.hasOk;
+      this.needsInputFlush = !finalState.hasOk;
       return lines;
     }
 
-    if (!options.acceptValue && finalAnalysis.valueLine) {
+    if (!options.acceptValue && finalState.valueLine) {
       const received = formatReceivedForError(this.responseLines, this.responseRemainder);
       this.clearResponseBuffer();
       throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。受信内容=[${received}]`);
@@ -502,6 +528,14 @@ export class XBeeSerialSession {
     const lines = this.responseLines;
     this.clearResponseBuffer();
     return lines;
+  }
+
+  promoteRemainderToLine() {
+    const trimmed = this.responseRemainder.trim();
+    if (trimmed) {
+      this.responseLines.push(trimmed);
+      this.responseRemainder = "";
+    }
   }
 
   ensureReady() {
