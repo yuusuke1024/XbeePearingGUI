@@ -138,7 +138,7 @@ export class XBeeSerialSession {
     this.buffer = "";
     this.isOpen = false;
     this.pendingRead = null;
-    this.pendingReadResult = null;
+    this.pendingReadRecord = null;
     this.commandTimeoutMs = options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS;
     this.enterCommandTimeoutMs = options.enterCommandTimeoutMs ?? ENTER_COMMAND_TIMEOUT_MS;
     this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
@@ -203,7 +203,7 @@ export class XBeeSerialSession {
     this.isOpen = false;
     this.buffer = "";
     this.pendingRead = null;
-    this.pendingReadResult = null;
+    this.pendingReadRecord = null;
   }
 
   async enterCommandMode() {
@@ -305,12 +305,9 @@ export class XBeeSerialSession {
 
     while (Date.now() < deadline) {
       const waitMs = computeWaitMs(deadline, settleDeadline);
-      const result = await Promise.race([
-        this.readFromReader().then((readResult) => ({ kind: "read", ...readResult })),
-        delay(waitMs).then(() => ({ kind: "timeout" }))
-      ]);
+      const result = await this.readFromReader(waitMs);
 
-      if (result.kind === "timeout") {
+      if (result === null) {
         const analysis = analyzeResponseLines(state.lines);
         if (options.acceptValue && analysis.valueLine) {
           this.buffer = state.remainder;
@@ -354,39 +351,58 @@ export class XBeeSerialSession {
   }
 
   /**
-   * reader.read() を重ねて発行せず、timeout をまたいでも同じ read を再利用する
-   * @returns {Promise<ReadableStreamReadResult<Uint8Array>>}
+   * reader.read() を重ねて発行せず、timeout をまたいでも同じ read を再利用する。
+   * timeout後に read が解決した場合は、次回読み取りまで結果を保持する。
+   * @param {number} timeoutMs
+   * @returns {Promise<ReadableStreamReadResult<Uint8Array> | null>}
    */
-  async readFromReader() {
+  async readFromReader(timeoutMs) {
     if (!this.reader) {
       throw new Error(`${this.name}: reader が利用できません。`);
     }
 
-    if (this.pendingReadResult) {
-      const result = this.pendingReadResult;
-      this.pendingReadResult = null;
-      return result;
+    if (this.pendingReadRecord) {
+      return this.consumePendingReadRecord(this.pendingReadRecord);
     }
 
     if (!this.pendingRead) {
-      this.pendingRead = this.reader.read().then(
-        (result) => {
-          this.pendingRead = null;
-          this.pendingReadResult = result;
-          return result;
-        },
-        (error) => {
-          this.pendingRead = null;
-          throw error;
-        }
-      );
+      this.pendingRead = this.reader.read()
+        .then(
+          (result) => ({ ok: true, result }),
+          (error) => ({ ok: false, error })
+        )
+        .then((record) => {
+          this.pendingReadRecord = record;
+          return record;
+        });
     }
 
-    const result = await this.pendingRead;
-    if (this.pendingReadResult === result) {
-      this.pendingReadResult = null;
+    const timeoutMarker = {};
+    const record = await Promise.race([
+      this.pendingRead,
+      delay(timeoutMs).then(() => timeoutMarker)
+    ]);
+
+    if (record === timeoutMarker) {
+      return null;
     }
-    return result;
+
+    return this.consumePendingReadRecord(record);
+  }
+
+  /**
+   * @param {{ ok: true, result: ReadableStreamReadResult<Uint8Array> } | { ok: false, error: unknown }} record
+   * @returns {ReadableStreamReadResult<Uint8Array>}
+   */
+  consumePendingReadRecord(record) {
+    this.pendingRead = null;
+    this.pendingReadRecord = null;
+
+    if (!record.ok) {
+      throw record.error;
+    }
+
+    return record.result;
   }
 
   ensureReady() {
