@@ -137,6 +137,8 @@ export class XBeeSerialSession {
     this.encoder = new TextEncoder();
     this.buffer = "";
     this.isOpen = false;
+    this.pendingRead = null;
+    this.pendingReadResult = null;
     this.commandTimeoutMs = options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS;
     this.enterCommandTimeoutMs = options.enterCommandTimeoutMs ?? ENTER_COMMAND_TIMEOUT_MS;
     this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
@@ -200,6 +202,8 @@ export class XBeeSerialSession {
 
     this.isOpen = false;
     this.buffer = "";
+    this.pendingRead = null;
+    this.pendingReadResult = null;
   }
 
   async enterCommandMode() {
@@ -302,7 +306,7 @@ export class XBeeSerialSession {
     while (Date.now() < deadline) {
       const waitMs = computeWaitMs(deadline, settleDeadline);
       const result = await Promise.race([
-        this.reader.read().then((readResult) => ({ kind: "read", ...readResult })),
+        this.readFromReader().then((readResult) => ({ kind: "read", ...readResult })),
         delay(waitMs).then(() => ({ kind: "timeout" }))
       ]);
 
@@ -347,6 +351,42 @@ export class XBeeSerialSession {
       throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。`);
     }
     throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。`);
+  }
+
+  /**
+   * reader.read() を重ねて発行せず、timeout をまたいでも同じ read を再利用する
+   * @returns {Promise<ReadableStreamReadResult<Uint8Array>>}
+   */
+  async readFromReader() {
+    if (!this.reader) {
+      throw new Error(`${this.name}: reader が利用できません。`);
+    }
+
+    if (this.pendingReadResult) {
+      const result = this.pendingReadResult;
+      this.pendingReadResult = null;
+      return result;
+    }
+
+    if (!this.pendingRead) {
+      this.pendingRead = this.reader.read().then(
+        (result) => {
+          this.pendingRead = null;
+          this.pendingReadResult = result;
+          return result;
+        },
+        (error) => {
+          this.pendingRead = null;
+          throw error;
+        }
+      );
+    }
+
+    const result = await this.pendingRead;
+    if (this.pendingReadResult === result) {
+      this.pendingReadResult = null;
+    }
+    return result;
   }
 
   ensureReady() {

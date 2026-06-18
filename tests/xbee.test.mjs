@@ -182,6 +182,18 @@ test("readSerialLow は 値のみ応答で成功する", async () => {
   await session.close();
 });
 
+test("readSerialLow の値のみ応答後でも次のOK応答を失わない", async () => {
+  const { session, port } = await openTestSession([
+    { text: "1234ABCD\r" },
+    { text: "OK\r", delayMs: 12 }
+  ]);
+
+  assert.equal(await session.readSerialLow(), "1234ABCD");
+  await session.sendOkCommand("ATID1\r", "ATID1");
+  assert.deepEqual(port.writer.writes, ["ATSL\r", "ATID1\r"]);
+  await session.close();
+});
+
 test("readSerialLow は 値とOKが同一チャンクで成功し値を返す", async () => {
   const { session, port } = await openTestSession([{ text: "1234ABCD\rOK\r" }]);
   assert.equal(await session.readSerialLow(), "1234ABCD");
