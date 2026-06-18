@@ -2,6 +2,7 @@
   "name": "xbee-pairing-gui",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "test": "node --test --test-concurrency=1 --test-isolation=none tests/xbee.test.mjs"
