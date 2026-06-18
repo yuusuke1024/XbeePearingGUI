@@ -6,8 +6,10 @@ import {
   analyzeResponseState,
   appendResponseChunk,
   baudRateToAtbd,
+  buildBaudRateCandidates,
   buildPairingPlan,
   extractCompleteLines,
+  openCommandModeSession,
   normalizePanId,
   sanitizeHex32,
   XBeeSerialSession
@@ -60,6 +62,8 @@ function createFakeSerialPort(script) {
     }
   };
 
+  const openOptions = [];
+
   const writer = {
     writes: [],
     async write(bytes) {
@@ -87,14 +91,16 @@ function createFakeSerialPort(script) {
         return writer;
       }
     },
-    async open() {
+    async open(options) {
+      openOptions.push(options);
       this.isOpen = true;
     },
     async close() {
       this.isOpen = false;
     },
     reader,
-    writer
+    writer,
+    openOptions
   };
 }
 
@@ -139,6 +145,11 @@ test("baudRateToAtbd はボーレートを ATBD コードに変換する", () =>
 
 test("baudRateToAtbd は未対応のボーレートを拒否する", () => {
   assert.throws(() => baudRateToAtbd(12345), /未対応/);
+});
+
+test("buildBaudRateCandidates は指定ボーレートを優先して重複と未対応値を除外する", () => {
+  assert.deepEqual(buildBaudRateCandidates(38400), [38400, 9600, 115200, 57600, 19200, 4800, 2400, 1200]);
+  assert.deepEqual(buildBaudRateCandidates([115200, 9600, 12345]), [115200, 9600, 38400, 57600, 19200, 4800, 2400, 1200]);
 });
 
 test("buildPairingPlan は Coordinator=A の計画を返す", () => {
@@ -266,6 +277,28 @@ test("enterCommandMode は +++ を送信して OK を受信する", async () => 
   await assert.doesNotReject(async () => {
     await session.enterCommandMode();
   });
+  assert.deepEqual(port.writer.writes, ["+++"]);
+  await session.close();
+});
+
+test("openCommandModeSession は応答したボーレートのセッションを開いたまま返す", async () => {
+  const port = createFakeSerialPort([
+    { command: "+++", chunks: [{ text: "OK\r" }] }
+  ]);
+
+  const session = await openCommandModeSession(port, {
+    name: "Test",
+    candidates: [38400],
+    logger: () => {},
+    commandTimeoutMs: 40,
+    enterCommandTimeoutMs: 40,
+    closeTimeoutMs: 5,
+    valueSettleTimeoutMs: 10
+  });
+
+  assert.equal(session.baudRate, 38400);
+  assert.equal(port.isOpen, true);
+  assert.deepEqual(port.openOptions.map((options) => options.baudRate), [38400]);
   assert.deepEqual(port.writer.writes, ["+++"]);
   await session.close();
 });

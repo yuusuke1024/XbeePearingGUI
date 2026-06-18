@@ -119,7 +119,7 @@ async function testConnection() {
   }
 
   setBusy(true);
-  appendLog("接続テストを開始します。PC と XBee の通信は 9600 bps 固定で確認します。");
+  appendLog("接続テストを開始します。XBee の現在の UART ボーレートを自動検出します。");
 
   try {
     const foundA = await findWorkingBaudRate(selectedPorts.A, {
@@ -132,15 +132,15 @@ async function testConnection() {
     });
 
     if (foundA && foundB) {
-      appendLog(`[OK] XBee A は 9600 bps で応答しました`);
-      appendLog(`[OK] XBee B は 9600 bps で応答しました`);
+      appendLog(`[OK] XBee A は ${foundA} bps で応答しました`);
+      appendLog(`[OK] XBee B は ${foundB} bps で応答しました`);
       appendLog("ペアリングを実行できます。");
     } else {
       if (!foundA) {
-        appendLog(`[NG] XBee A から応答がありませんでした。電源・ケーブルを確認してください。XBee の UART ボーレートが 9600 以外の場合は 9600 に戻してください。`);
+        appendLog(`[NG] XBee A から応答がありませんでした。電源・ケーブル、AT/API モード、UART ボーレート設定を確認してください。`);
       }
       if (!foundB) {
-        appendLog(`[NG] XBee B から応答がありませんでした。電源・ケーブルを確認してください。XBee の UART ボーレートが 9600 以外の場合は 9600 に戻してください。`);
+        appendLog(`[NG] XBee B から応答がありませんでした。電源・ケーブル、AT/API モード、UART ボーレート設定を確認してください。`);
       }
       appendLog("XBee が API モードになっている可能性もあります。AT モードに設定してください。");
     }

@@ -4,8 +4,6 @@ const COMMAND_TIMEOUT_MS = 2500;
 const CLOSE_TIMEOUT_MS = 1000;
 const VALUE_SETTLE_TIMEOUT_MS = 80;
 
-const CONFIG_BAUD_RATE = 9600;
-
 const BAUD_RATE_ATBD_TABLE = {
   1200: "0",
   2400: "1",
@@ -16,6 +14,37 @@ const BAUD_RATE_ATBD_TABLE = {
   57600: "6",
   115200: "7"
 };
+
+export const DEFAULT_BAUD_RATE_CANDIDATES = [9600, 38400, 115200, 57600, 19200, 4800, 2400, 1200];
+
+/**
+ * @param {number | number[]} preferred
+ * @returns {number[]}
+ */
+export function buildBaudRateCandidates(preferred = []) {
+  const preferredList = Array.isArray(preferred) ? preferred : [preferred];
+  return uniqueSupportedBaudRates([...preferredList, ...DEFAULT_BAUD_RATE_CANDIDATES]);
+}
+
+/**
+ * @param {number[]} candidates
+ * @returns {number[]}
+ */
+function uniqueSupportedBaudRates(candidates) {
+  const seen = new Set();
+  const result = [];
+
+  for (const candidate of candidates) {
+    const baudRate = Number(candidate);
+    if (!BAUD_RATE_ATBD_TABLE[baudRate] || seen.has(baudRate)) {
+      continue;
+    }
+    seen.add(baudRate);
+    result.push(baudRate);
+  }
+
+  return result;
+}
 
 export function baudRateToAtbd(baudRate) {
   const code = BAUD_RATE_ATBD_TABLE[baudRate];
@@ -581,24 +610,24 @@ export async function pairXBees(options) {
     coordinator: options.coordinator,
     baudRate: options.baudRate
   });
+  const baudRateCandidates = buildBaudRateCandidates(options.baudRate);
 
-  const sessionA = new XBeeSerialSession(options.portA, {
-    baudRate: CONFIG_BAUD_RATE,
-    name: "XBee A",
-    logger
-  });
-  const sessionB = new XBeeSerialSession(options.portB, {
-    baudRate: CONFIG_BAUD_RATE,
-    name: "XBee B",
-    logger
-  });
+  let sessionA = null;
+  let sessionB = null;
 
   try {
-    await sessionA.open();
-    await sessionB.open();
-
-    await sessionA.enterCommandMode();
-    await sessionB.enterCommandMode();
+    logger(`[SCAN] UART ボーレート候補: ${baudRateCandidates.join(", ")} bps`);
+    sessionA = await openCommandModeSession(options.portA, {
+      name: "XBee A",
+      candidates: baudRateCandidates,
+      logger
+    });
+    sessionB = await openCommandModeSession(options.portB, {
+      name: "XBee B",
+      candidates: baudRateCandidates,
+      logger
+    });
+    logger(`[SCAN] XBee A=${sessionA.baudRate} bps / XBee B=${sessionB.baudRate} bps で設定通信します`);
 
     const slA = await sessionA.readSerialLow();
     const slB = await sessionB.readSerialLow();
@@ -633,8 +662,58 @@ export async function pairXBees(options) {
       baudRate: options.baudRate
     };
   } finally {
-    await Promise.allSettled([sessionA.close(), sessionB.close()]);
+    await Promise.allSettled([sessionA?.close(), sessionB?.close()]);
   }
+}
+
+/**
+ * @param {SerialPort} port
+ * @param {{
+ *   name: string,
+ *   candidates?: number[],
+ *   logger?: (message: string) => void
+ *   commandTimeoutMs?: number,
+ *   enterCommandTimeoutMs?: number,
+ *   closeTimeoutMs?: number,
+ *   valueSettleTimeoutMs?: number
+ * }} options
+ * @returns {Promise<XBeeSerialSession>}
+ */
+export async function openCommandModeSession(port, options) {
+  const candidates = options.candidates ? uniqueSupportedBaudRates(options.candidates) : DEFAULT_BAUD_RATE_CANDIDATES;
+  const logger = options.logger ?? (() => {});
+
+  for (const baudRate of candidates) {
+    let enteredCommandMode = false;
+    const session = new XBeeSerialSession(port, {
+      baudRate,
+      name: options.name,
+      logger,
+      commandTimeoutMs: options.commandTimeoutMs ?? 1000,
+      enterCommandTimeoutMs: options.enterCommandTimeoutMs ?? 1000,
+      closeTimeoutMs: options.closeTimeoutMs ?? 500,
+      valueSettleTimeoutMs: options.valueSettleTimeoutMs ?? 50
+    });
+
+    try {
+      logger(`[${options.name}] ${baudRate} bps でコマンドモードを確認します`);
+      await session.open();
+      await session.enterCommandMode();
+      logger(`[${options.name}] ${baudRate} bps でコマンドモードに入りました`);
+      enteredCommandMode = true;
+      return session;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`[${options.name}] ${baudRate} bps では応答しませんでした: ${message}`);
+      // このボーレートではコマンドモードに入れなかった
+    } finally {
+      if (!enteredCommandMode) {
+        await session.close().catch(() => {});
+      }
+    }
+  }
+
+  throw new Error(`${options.name}: ${candidates.join(", ")} bps のいずれでもコマンドモードに入れませんでした。XBee の電源、配線、AT/API モード設定を確認してください。`);
 }
 
 /**
@@ -647,31 +726,15 @@ export async function pairXBees(options) {
  * @returns {Promise<number | null>}
  */
 export async function findWorkingBaudRate(port, options) {
-  const candidates = options.candidates ?? [9600];
-  const logger = options.logger ?? (() => {});
+  let session = null;
 
-  for (const baudRate of candidates) {
-    const session = new XBeeSerialSession(port, {
-      baudRate,
-      name: options.name,
-      logger,
-      commandTimeoutMs: 1000,
-      enterCommandTimeoutMs: 1000,
-      closeTimeoutMs: 500,
-      valueSettleTimeoutMs: 50
-    });
-
-    try {
-      await session.open();
-      await session.enterCommandMode();
-      await session.sendOkCommand("ATCN\r", "ATCN");
-      return baudRate;
-    } catch {
-      // このボーレートではコマンドモードに入れなかった
-    } finally {
-      await session.close().catch(() => {});
-    }
+  try {
+    session = await openCommandModeSession(port, options);
+    await session.sendOkCommand("ATCN\r", "ATCN").catch(() => {});
+    return session.baudRate;
+  } catch {
+    return null;
+  } finally {
+    await session?.close().catch(() => {});
   }
-
-  return null;
 }

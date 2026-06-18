@@ -61,7 +61,7 @@
 
             <label class="field">
               <span>PAN ID</span>
-              <input id="panId" name="panId" type="text" inputmode="text" placeholder="例: 1234ABCD" autocomplete="off" />
+              <input id="panId" name="panId" type="text" inputmode="text" placeholder="例: 1234ABCD" autocomplete="off" required pattern="^(0[xX])?[0-9A-Fa-f]{1,16}$" title="1〜16 桁の16進数で入力してください。0x 接頭辞は省略可能です。" />
             </label>
           </div>
 
@@ -99,7 +99,7 @@
           </div>
         </div>
         <ul class="notes-list">
-          <li>PC と XBee の設定通信は常に <code>9600 bps</code> で行います。</li>
+          <li>PC と XBee の設定通信は、XBee の現在の UART ボーレートを候補から自動検出して行います。</li>
           <li>変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code>、<code>BD</code> です。<code>BD</code> は XBee 同士が接続機器と通信するボーレートです。</li>
           <li><code>SL</code> は読み取り専用です。相手側の <code>SL</code> を自動で <code>DL</code> に書き込みます。</li>
           <li><code>DH</code> は変更しません。既存値が 0 以外だと通信できない可能性があります。</li>
