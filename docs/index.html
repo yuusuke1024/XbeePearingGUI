@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>XBee Pairing GUI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="panel panel-settings" aria-labelledby="settings-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Web Serial / XBee</p>
+            <h1 id="settings-title">XBee Pairing GUI</h1>
+          </div>
+          <div class="status-block">
+            <span id="supportBadge" class="badge">確認中</span>
+          </div>
+        </div>
+
+        <p id="supportMessage" class="support-message" role="status" aria-live="polite"></p>
+
+        <form id="pairingForm" class="form-grid">
+          <fieldset class="field-group">
+            <legend>ポート選択</legend>
+            <div class="device-grid">
+              <section class="device-card" aria-labelledby="device-a-title">
+                <div class="device-card-header">
+                  <h2 id="device-a-title">XBee A</h2>
+                  <span id="portAState" class="port-state">未選択</span>
+                </div>
+                <button id="selectPortAButton" class="action-button" type="button">XBee A のポートを選択</button>
+                <p id="portALabel" class="port-label">ポート未選択</p>
+              </section>
+
+              <section class="device-card" aria-labelledby="device-b-title">
+                <div class="device-card-header">
+                  <h2 id="device-b-title">XBee B</h2>
+                  <span id="portBState" class="port-state">未選択</span>
+                </div>
+                <button id="selectPortBButton" class="action-button" type="button">XBee B のポートを選択</button>
+                <p id="portBLabel" class="port-label">ポート未選択</p>
+              </section>
+            </div>
+          </fieldset>
+
+          <div class="field-row">
+            <label class="field">
+              <span>ボーレート</span>
+              <select id="baudRate" name="baudRate">
+                <option value="9600" selected>9600</option>
+                <option value="19200">19200</option>
+                <option value="38400">38400</option>
+                <option value="57600">57600</option>
+                <option value="115200">115200</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>PAN ID</span>
+              <input id="panId" name="panId" type="text" inputmode="text" placeholder="例: 1234ABCD" autocomplete="off" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Coordinator 選択</span>
+            <select id="coordinator" name="coordinator">
+              <option value="A">A を Coordinator / B を Router</option>
+              <option value="B">B を Coordinator / A を Router</option>
+            </select>
+          </label>
+
+          <div class="command-row">
+            <button id="runButton" class="primary-button" type="submit">ペアリング設定を書き込む</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel panel-log" aria-labelledby="log-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">実行ログ</p>
+            <h2 id="log-title">シリアルログ</h2>
+          </div>
+          <button id="clearLogButton" class="ghost-button" type="button">ログを消去</button>
+        </div>
+        <pre id="logOutput" class="log-output" aria-live="polite"></pre>
+      </section>
+
+      <section class="panel panel-notes" aria-labelledby="notes-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">注意事項</p>
+            <h2 id="notes-title">適用範囲</h2>
+          </div>
+        </div>
+        <ul class="notes-list">
+          <li>変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code> のみです。</li>
+          <li><code>SL</code> は読み取り専用です。相手側の <code>SL</code> を自動で <code>DL</code> に書き込みます。</li>
+          <li><code>DH</code> は変更しません。既存値が 0 以外だと通信できない可能性があります。</li>
+          <li>Function Set / Firmware は変更しません。<code>ZIGBEETHReg</code> のまま使ってください。</li>
+        </ul>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
