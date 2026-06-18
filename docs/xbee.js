@@ -136,9 +136,13 @@ export class XBeeSerialSession {
     this.decoder = new TextDecoder();
     this.encoder = new TextEncoder();
     this.buffer = "";
+    this.responseLines = [];
+    this.responseRemainder = "";
+    this.waiters = [];
     this.isOpen = false;
-    this.pendingRead = null;
-    this.pendingReadRecord = null;
+    this.readLoopPromise = null;
+    this.readLoopError = null;
+    this.needsInputFlush = false;
     this.commandTimeoutMs = options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS;
     this.enterCommandTimeoutMs = options.enterCommandTimeoutMs ?? ENTER_COMMAND_TIMEOUT_MS;
     this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
@@ -166,6 +170,8 @@ export class XBeeSerialSession {
     }
 
     this.isOpen = true;
+    this.readLoopError = null;
+    this.readLoopPromise = this.readLoop();
     this.log(`ポートを開きました (baud=${this.baudRate})`);
   }
 
@@ -177,7 +183,13 @@ export class XBeeSerialSession {
         Promise.race([
           this.reader.cancel().catch(() => {}),
           delay(this.closeTimeoutMs)
-        ]).then(() => {
+        ]).then(async () => {
+          if (this.readLoopPromise) {
+            await Promise.race([
+              this.readLoopPromise.catch(() => {}),
+              delay(this.closeTimeoutMs)
+            ]);
+          }
           this.reader?.releaseLock();
           this.reader = null;
         })
@@ -202,14 +214,19 @@ export class XBeeSerialSession {
 
     this.isOpen = false;
     this.buffer = "";
-    this.pendingRead = null;
-    this.pendingReadRecord = null;
+    this.responseLines = [];
+    this.responseRemainder = "";
+    this.waiters = [];
+    this.readLoopPromise = null;
+    this.readLoopError = null;
+    this.needsInputFlush = false;
   }
 
   async enterCommandMode() {
     this.ensureReady();
     this.log("コマンドモードへ移行します");
     await delay(GUARD_TIME_MS);
+    this.clearResponseBuffer();
     await this.writeRaw("+++");
     await this.expectOk(this.enterCommandTimeoutMs, "コマンドモード移行");
   }
@@ -241,7 +258,8 @@ export class XBeeSerialSession {
   async sendCommand(command, options) {
     this.ensureReady();
     this.log(`${options.label} を送信します`);
-    this.buffer = "";
+    await this.flushStaleInputIfNeeded();
+    this.clearResponseBuffer();
     await this.writeRaw(command);
     const lines = await this.readResponse(options.label, this.commandTimeoutMs, {
       acceptValue: options.expectValue
@@ -300,109 +318,144 @@ export class XBeeSerialSession {
 
     const deadline = Date.now() + timeoutMs;
     let settleDeadline = null;
-    let state = { lines: [], remainder: this.buffer };
-    this.buffer = "";
 
     while (Date.now() < deadline) {
       const waitMs = computeWaitMs(deadline, settleDeadline);
-      const result = await this.readFromReader(waitMs);
-
-      if (result === null) {
-        const analysis = analyzeResponseLines(state.lines);
-        if (options.acceptValue && analysis.valueLine) {
-          this.buffer = state.remainder;
-          return state.lines;
-        }
-        continue;
-      }
-
-      if (result.done) {
-        break;
-      }
-
-      if (!result.value) {
-        continue;
-      }
-
-      state = appendResponseChunk(state, this.decoder.decode(result.value, { stream: true }));
-      const analysis = analyzeResponseLines(state.lines);
+      const analysis = analyzeResponseLines(this.responseLines);
 
       if (analysis.hasOk) {
-        this.buffer = state.remainder;
-        return state.lines;
+        const lines = this.consumeResponseLines();
+        this.needsInputFlush = false;
+        return lines;
       }
 
       if (options.acceptValue && analysis.valueLine && settleDeadline === null) {
         settleDeadline = Date.now() + this.valueSettleTimeoutMs;
       }
+
+      if (options.acceptValue && analysis.valueLine && settleDeadline !== null && Date.now() >= settleDeadline) {
+        const lines = this.consumeResponseLines();
+        this.needsInputFlush = true;
+        return lines;
+      }
+
+      const didReceive = await this.waitForInput(waitMs);
+      if (!didReceive) {
+        const latest = analyzeResponseLines(this.responseLines);
+        if (options.acceptValue && latest.valueLine) {
+          const lines = this.consumeResponseLines();
+          this.needsInputFlush = !latest.hasOk;
+          return lines;
+        }
+      }
     }
 
-    const finalAnalysis = analyzeResponseLines(state.lines);
+    const finalAnalysis = analyzeResponseLines(this.responseLines);
     if (options.acceptValue && finalAnalysis.valueLine) {
-      this.buffer = state.remainder;
-      return state.lines;
+      const lines = this.consumeResponseLines();
+      this.needsInputFlush = !finalAnalysis.hasOk;
+      return lines;
     }
 
-    this.buffer = state.remainder;
     if (!options.acceptValue && finalAnalysis.valueLine) {
+      this.clearResponseBuffer();
       throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。`);
     }
     throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。`);
   }
 
-  /**
-   * reader.read() を重ねて発行せず、timeout をまたいでも同じ read を再利用する。
-   * timeout後に read が解決した場合は、次回読み取りまで結果を保持する。
-   * @param {number} timeoutMs
-   * @returns {Promise<ReadableStreamReadResult<Uint8Array> | null>}
-   */
-  async readFromReader(timeoutMs) {
+  async readLoop() {
     if (!this.reader) {
-      throw new Error(`${this.name}: reader が利用できません。`);
+      return;
     }
 
-    if (this.pendingReadRecord) {
-      return this.consumePendingReadRecord(this.pendingReadRecord);
+    try {
+      while (this.reader) {
+        const { value, done } = await this.reader.read();
+        if (done) {
+          break;
+        }
+        if (value) {
+          const next = appendResponseChunk(
+            { lines: this.responseLines, remainder: this.responseRemainder },
+            this.decoder.decode(value, { stream: true })
+          );
+          this.responseLines = next.lines;
+          this.responseRemainder = next.remainder;
+          this.notifyInputWaiters();
+        }
+      }
+    } catch (error) {
+      this.readLoopError = error;
+      this.notifyInputWaiters();
     }
-
-    if (!this.pendingRead) {
-      this.pendingRead = this.reader.read()
-        .then(
-          (result) => ({ ok: true, result }),
-          (error) => ({ ok: false, error })
-        )
-        .then((record) => {
-          this.pendingReadRecord = record;
-          return record;
-        });
-    }
-
-    const timeoutMarker = {};
-    const record = await Promise.race([
-      this.pendingRead,
-      delay(timeoutMs).then(() => timeoutMarker)
-    ]);
-
-    if (record === timeoutMarker) {
-      return null;
-    }
-
-    return this.consumePendingReadRecord(record);
   }
 
   /**
-   * @param {{ ok: true, result: ReadableStreamReadResult<Uint8Array> } | { ok: false, error: unknown }} record
-   * @returns {ReadableStreamReadResult<Uint8Array>}
+   * @param {number} timeoutMs
+   * @returns {Promise<boolean>}
    */
-  consumePendingReadRecord(record) {
-    this.pendingRead = null;
-    this.pendingReadRecord = null;
-
-    if (!record.ok) {
-      throw record.error;
+  waitForInput(timeoutMs) {
+    if (this.readLoopError) {
+      throw this.readLoopError;
     }
 
-    return record.result;
+    if (this.responseLines.length > 0 || this.responseRemainder) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.waiters = this.waiters.filter((waiter) => waiter !== resolveInput);
+        resolve(false);
+      }, timeoutMs);
+
+      const resolveInput = () => {
+        clearTimeout(timeoutId);
+        if (this.readLoopError) {
+          reject(this.readLoopError);
+          return;
+        }
+        resolve(true);
+      };
+
+      this.waiters.push(resolveInput);
+    });
+  }
+
+  notifyInputWaiters() {
+    const waiters = this.waiters.splice(0, this.waiters.length);
+    for (const waiter of waiters) {
+      waiter();
+    }
+  }
+
+  async flushStaleInputIfNeeded() {
+    if (!this.needsInputFlush) {
+      return;
+    }
+
+    this.clearResponseBuffer();
+    const staleFlushTimeoutMs = Math.max(this.valueSettleTimeoutMs, this.commandTimeoutMs);
+    while (true) {
+      const didReceive = await this.waitForInput(staleFlushTimeoutMs);
+      if (!didReceive) {
+        this.needsInputFlush = false;
+        return;
+      }
+      this.clearResponseBuffer();
+    }
+  }
+
+  clearResponseBuffer() {
+    this.responseLines = [];
+    this.responseRemainder = "";
+  }
+
+  consumeResponseLines() {
+    const lines = this.responseLines;
+    this.clearResponseBuffer();
+    return lines;
   }
 
   ensureReady() {

@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/xbee.test.mjs"
+    "test": "node --test --test-concurrency=1 --test-isolation=none tests/xbee.test.mjs"
   }
 }
