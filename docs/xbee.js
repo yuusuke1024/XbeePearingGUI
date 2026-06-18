@@ -563,3 +563,42 @@ export async function pairXBees(options) {
     await Promise.allSettled([sessionA.close(), sessionB.close()]);
   }
 }
+
+/**
+ * @param {SerialPort} port
+ * @param {{
+ *   name: string,
+ *   candidates?: number[],
+ *   logger?: (message: string) => void
+ * }} options
+ * @returns {Promise<number | null>}
+ */
+export async function findWorkingBaudRate(port, options) {
+  const candidates = options.candidates ?? [9600, 38400, 115200, 19200, 57600];
+  const logger = options.logger ?? (() => {});
+
+  for (const baudRate of candidates) {
+    const session = new XBeeSerialSession(port, {
+      baudRate,
+      name: options.name,
+      logger,
+      commandTimeoutMs: 1000,
+      enterCommandTimeoutMs: 1000,
+      closeTimeoutMs: 500,
+      valueSettleTimeoutMs: 50
+    });
+
+    try {
+      await session.open();
+      await session.enterCommandMode();
+      await session.sendOkCommand("ATCN\r", "ATCN");
+      return baudRate;
+    } catch {
+      // このボーレートではコマンドモードに入れなかった
+    } finally {
+      await session.close().catch(() => {});
+    }
+  }
+
+  return null;
+}

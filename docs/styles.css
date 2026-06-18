@@ -253,6 +253,7 @@ input:disabled {
 
 .command-row {
   display: flex;
+  gap: 10px;
 }
 
 .log-output {

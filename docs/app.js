@@ -1,7 +1,8 @@
-import { normalizePanId, pairXBees } from "./xbee.js";
+import { findWorkingBaudRate, normalizePanId, pairXBees } from "./xbee.js";
 
 const form = /** @type {HTMLFormElement} */ (document.getElementById("pairingForm"));
 const runButton = /** @type {HTMLButtonElement} */ (document.getElementById("runButton"));
+const testConnectionButton = /** @type {HTMLButtonElement} */ (document.getElementById("testConnectionButton"));
 const clearLogButton = /** @type {HTMLButtonElement} */ (document.getElementById("clearLogButton"));
 const selectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortAButton"));
 const selectPortBButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortBButton"));
@@ -79,6 +80,7 @@ function setBusy(isBusy) {
   const isPortASelected = selectedPorts.A !== null;
   const isPortBSelected = selectedPorts.B !== null;
   runButton.disabled = isBusy || !supportsWebSerial();
+  testConnectionButton.disabled = isBusy || !supportsWebSerial();
   clearLogButton.disabled = isBusy;
   selectPortAButton.disabled = isBusy || !supportsWebSerial();
   selectPortBButton.disabled = isBusy || !supportsWebSerial();
@@ -110,6 +112,50 @@ async function requestPort(side) {
 /**
  * @param {"A"|"B"} side
  */
+async function testConnection() {
+  if (!selectedPorts.A || !selectedPorts.B) {
+    appendLog("XBee A と XBee B の両方のポートを選択してください。");
+    return;
+  }
+
+  setBusy(true);
+  appendLog("接続テストを開始します。各ポートでボーレートを自動検出します。");
+
+  try {
+    const foundA = await findWorkingBaudRate(selectedPorts.A, {
+      name: "XBee A",
+      logger: appendLog
+    });
+    const foundB = await findWorkingBaudRate(selectedPorts.B, {
+      name: "XBee B",
+      logger: appendLog
+    });
+
+    if (foundA && foundB) {
+      appendLog(`[OK] XBee A は ${foundA} bps で応答しました`);
+      appendLog(`[OK] XBee B は ${foundB} bps で応答しました`);
+      if (foundA === foundB) {
+        baudRateSelect.value = String(foundA);
+        appendLog(`ボーレートを ${foundA} bps に設定しました。ペアリングを実行できます。`);
+      } else {
+        appendLog(`[WARN] A と B のボーレートが異なります (${foundA} vs ${foundB})。同じボーレートに設定してください。`);
+      }
+    } else {
+      if (!foundA) {
+        appendLog(`[NG] XBee A から応答がありませんでした。電源・ケーブル・ボーレートを確認してください。`);
+      }
+      if (!foundB) {
+        appendLog(`[NG] XBee B から応答がありませんでした。電源・ケーブル・ボーレートを確認してください。`);
+      }
+      appendLog("XBee が API モードになっている可能性もあります。AT モードに設定してください。");
+    }
+  } catch (error) {
+    appendLog(`接続テストでエラー: ${formatError(error)}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function disconnectPort(side) {
   if (!supportsWebSerial()) {
     appendLog("Web Serial API が使えないため、切断できません。");
@@ -185,6 +231,10 @@ disconnectPortAButton.addEventListener("click", async () => {
 
 disconnectPortBButton.addEventListener("click", async () => {
   await disconnectPort("B");
+});
+
+testConnectionButton.addEventListener("click", async () => {
+  await testConnection();
 });
 
 clearLogButton.addEventListener("click", () => {
