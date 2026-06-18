@@ -5,6 +5,8 @@ const runButton = /** @type {HTMLButtonElement} */ (document.getElementById("run
 const clearLogButton = /** @type {HTMLButtonElement} */ (document.getElementById("clearLogButton"));
 const selectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortAButton"));
 const selectPortBButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortBButton"));
+const disconnectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementById("disconnectPortAButton"));
+const disconnectPortBButton = /** @type {HTMLButtonElement} */ (document.getElementById("disconnectPortBButton"));
 const baudRateSelect = /** @type {HTMLSelectElement} */ (document.getElementById("baudRate"));
 const panIdInput = /** @type {HTMLInputElement} */ (document.getElementById("panId"));
 const coordinatorSelect = /** @type {HTMLSelectElement} */ (document.getElementById("coordinator"));
@@ -54,9 +56,11 @@ function setPort(side, port) {
   const info = describePort(port);
   const label = side === "A" ? portALabel : portBLabel;
   const state = side === "A" ? portAState : portBState;
+  const disconnectButton = side === "A" ? disconnectPortAButton : disconnectPortBButton;
   label.textContent = info;
   state.textContent = "選択済み";
   state.className = "port-state is-selected";
+  disconnectButton.disabled = false;
   appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポートを選択しました: ${info}`);
 }
 
@@ -72,10 +76,14 @@ function describePort(port) {
 }
 
 function setBusy(isBusy) {
+  const isPortASelected = selectedPorts.A !== null;
+  const isPortBSelected = selectedPorts.B !== null;
   runButton.disabled = isBusy || !supportsWebSerial();
   clearLogButton.disabled = isBusy;
   selectPortAButton.disabled = isBusy || !supportsWebSerial();
   selectPortBButton.disabled = isBusy || !supportsWebSerial();
+  disconnectPortAButton.disabled = isBusy || !isPortASelected;
+  disconnectPortBButton.disabled = isBusy || !isPortBSelected;
   baudRateSelect.disabled = isBusy;
   panIdInput.disabled = isBusy;
   coordinatorSelect.disabled = isBusy;
@@ -97,6 +105,39 @@ async function requestPort(side) {
     }
     appendLog(`ポート選択に失敗しました: ${formatError(error)}`);
   }
+}
+
+/**
+ * @param {"A"|"B"} side
+ */
+async function disconnectPort(side) {
+  if (!supportsWebSerial()) {
+    appendLog("Web Serial API が使えないため、切断できません。");
+    return;
+  }
+
+  const port = selectedPorts[side];
+  if (!port) {
+    return;
+  }
+
+  try {
+    if (port.readable && port.writable) {
+      await port.close();
+      appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポートを閉じました`);
+    }
+  } catch (error) {
+    appendLog(`${side === "A" ? "XBee A" : "XBee B"} のポート切断中にエラー: ${formatError(error)}`);
+  }
+
+  selectedPorts[side] = null;
+  const label = side === "A" ? portALabel : portBLabel;
+  const state = side === "A" ? portAState : portBState;
+  label.textContent = "ポート未選択";
+  state.textContent = "未選択";
+  state.className = "port-state";
+  setBusy(false);
+  appendLog(`${side === "A" ? "XBee A" : "XBee B"} の選択を解除しました`);
 }
 
 function validateInputs() {
@@ -123,7 +164,9 @@ function validateInputs() {
 
 function formatError(error) {
   if (error instanceof Error) {
-    return error.message;
+    const stack = typeof error.stack === "string" ? error.stack.split("\n").slice(1, 4).join("\n") : "";
+    const details = [error.name, error.message, stack].filter(Boolean).join(" | ");
+    return details || String(error);
   }
   return String(error);
 }
@@ -134,6 +177,14 @@ selectPortAButton.addEventListener("click", async () => {
 
 selectPortBButton.addEventListener("click", async () => {
   await requestPort("B");
+});
+
+disconnectPortAButton.addEventListener("click", async () => {
+  await disconnectPort("A");
+});
+
+disconnectPortBButton.addEventListener("click", async () => {
+  await disconnectPort("B");
 });
 
 clearLogButton.addEventListener("click", () => {

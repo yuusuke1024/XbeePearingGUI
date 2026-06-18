@@ -8,6 +8,19 @@ const VALUE_SETTLE_TIMEOUT_MS = 80;
  * @param {string} value
  * @returns {string}
  */
+/**
+ * @param {string[]} lines
+ * @param {string} remainder
+ * @returns {string}
+ */
+function formatReceivedForError(lines, remainder) {
+  const parts = lines.map((line) => JSON.stringify(line));
+  if (remainder) {
+    parts.push(`remainder=${JSON.stringify(remainder)}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "(なし)";
+}
+
 export function sanitizeHex32(value) {
   const normalized = String(value ?? "").trim().toUpperCase().replace(/^0X/, "");
   if (!/^[0-9A-F]{1,8}$/.test(normalized)) {
@@ -227,6 +240,7 @@ export class XBeeSerialSession {
     this.log("コマンドモードへ移行します");
     await delay(GUARD_TIME_MS);
     this.clearResponseBuffer();
+    this.log(`送信: ${JSON.stringify("+++")}`);
     await this.writeRaw("+++");
     await delay(GUARD_TIME_MS);
     await this.expectOk(this.enterCommandTimeoutMs, "コマンドモード移行");
@@ -258,7 +272,7 @@ export class XBeeSerialSession {
    */
   async sendCommand(command, options) {
     this.ensureReady();
-    this.log(`${options.label} を送信します`);
+    this.log(`${options.label} を送信します: ${JSON.stringify(command)}`);
     await this.flushStaleInputIfNeeded();
     this.clearResponseBuffer();
     await this.writeRaw(command);
@@ -269,14 +283,16 @@ export class XBeeSerialSession {
 
     if (options.expectValue) {
       if (!analysis.valueLine) {
-        throw new Error(`${this.name}: ${options.label} の応答値を受信できませんでした。`);
+        const received = formatReceivedForError(lines, this.responseRemainder);
+        throw new Error(`${this.name}: ${options.label} の応答値を受信できませんでした。受信内容=[${received}]`);
       }
       this.log(`${options.label} 応答値: ${analysis.valueLine}`);
       return analysis.valueLine;
     }
 
     if (!analysis.hasOk) {
-      throw new Error(`${this.name}: ${options.label} の応答が OK ではありませんでした。`);
+      const received = formatReceivedForError(lines, this.responseRemainder);
+      throw new Error(`${this.name}: ${options.label} の応答が OK ではありませんでした。受信内容=[${received}]`);
     }
 
     this.log(`${options.label} OK`);
@@ -301,7 +317,8 @@ export class XBeeSerialSession {
     const lines = await this.readResponse(context, timeoutMs, { acceptValue: false });
     const analysis = analyzeResponseLines(lines);
     if (!analysis.hasOk) {
-      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。`);
+      const received = formatReceivedForError(lines, this.responseRemainder);
+      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。受信内容=[${received}]`);
     }
     this.log(`${context}: OK`);
   }
@@ -359,10 +376,12 @@ export class XBeeSerialSession {
     }
 
     if (!options.acceptValue && finalAnalysis.valueLine) {
+      const received = formatReceivedForError(this.responseLines, this.responseRemainder);
       this.clearResponseBuffer();
-      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。`);
+      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。受信内容=[${received}]`);
     }
-    throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。`);
+    const received = formatReceivedForError(this.responseLines, this.responseRemainder);
+    throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。受信内容=[${received}]`);
   }
 
   async readLoop() {
@@ -387,6 +406,8 @@ export class XBeeSerialSession {
         }
       }
     } catch (error) {
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      this.log(`シリアル読み取りでエラーが発生しました: ${message}`);
       this.readLoopError = error;
       this.notifyInputWaiters();
     }
