@@ -49,7 +49,7 @@
 
           <div class="field-row">
             <label class="field">
-              <span>ボーレート</span>
+              <span>ペアリング後の通信ボーレート (ATBD)</span>
               <select id="baudRate" name="baudRate">
                 <option value="9600" selected>9600</option>
                 <option value="19200">19200</option>
@@ -99,10 +99,12 @@
           </div>
         </div>
         <ul class="notes-list">
-          <li>変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code> のみです。</li>
+          <li>PC と XBee の設定通信は常に <code>9600 bps</code> で行います。</li>
+          <li>変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code>、<code>BD</code> です。<code>BD</code> は XBee 同士が接続機器と通信するボーレートです。</li>
           <li><code>SL</code> は読み取り専用です。相手側の <code>SL</code> を自動で <code>DL</code> に書き込みます。</li>
           <li><code>DH</code> は変更しません。既存値が 0 以外だと通信できない可能性があります。</li>
           <li>Function Set / Firmware は変更しません。<code>ZIGBEETHReg</code> のまま使ってください。</li>
+          <li><code>BD</code> の変更は <code>ATWR</code> 書き込み後に XBee を再起動（電源 OFF/ON）すると有効になります。</li>
         </ul>
       </section>
     </main>

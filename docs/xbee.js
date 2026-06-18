@@ -4,6 +4,27 @@ const COMMAND_TIMEOUT_MS = 2500;
 const CLOSE_TIMEOUT_MS = 1000;
 const VALUE_SETTLE_TIMEOUT_MS = 80;
 
+const CONFIG_BAUD_RATE = 9600;
+
+const BAUD_RATE_ATBD_TABLE = {
+  1200: "0",
+  2400: "1",
+  4800: "2",
+  9600: "3",
+  19200: "4",
+  38400: "5",
+  57600: "6",
+  115200: "7"
+};
+
+export function baudRateToAtbd(baudRate) {
+  const code = BAUD_RATE_ATBD_TABLE[baudRate];
+  if (!code) {
+    throw new Error(`未対応のボーレートです: ${baudRate}`);
+  }
+  return code;
+}
+
 /**
  * @param {string} value
  * @returns {string}
@@ -42,27 +63,30 @@ export function normalizePanId(input) {
 }
 
 /**
- * @param {{ panId: string, coordinator: "A"|"B" }} options
+ * @param {{ panId: string, coordinator: "A"|"B", baudRate: number }} options
  * @returns {{
  *   normalizedPanId: string,
  *   roles: { A: "1"|"0", B: "1"|"0" },
+ *   baudRate: number,
  *   commandsForA: string[],
  *   commandsForB: string[]
  * }}
  */
-export function buildPairingPlan({ panId, coordinator }) {
+export function buildPairingPlan({ panId, coordinator, baudRate }) {
   const normalizedPanId = normalizePanId(panId);
   if (coordinator !== "A" && coordinator !== "B") {
     throw new Error("Coordinator は A または B を指定してください。");
   }
 
+  const bdCode = baudRateToAtbd(baudRate);
   const roles = coordinator === "A" ? { A: "1", B: "0" } : { A: "0", B: "1" };
 
   return {
     normalizedPanId,
     roles,
-    commandsForA: [`ATID${normalizedPanId}\r`, `ATCE${roles.A}\r`],
-    commandsForB: [`ATID${normalizedPanId}\r`, `ATCE${roles.B}\r`]
+    baudRate,
+    commandsForA: [`ATID${normalizedPanId}\r`, `ATCE${roles.A}\r`, `ATBD${bdCode}\r`],
+    commandsForB: [`ATID${normalizedPanId}\r`, `ATCE${roles.B}\r`, `ATBD${bdCode}\r`]
   };
 }
 
@@ -508,16 +532,17 @@ export async function pairXBees(options) {
   const logger = options.logger ?? (() => {});
   const plan = buildPairingPlan({
     panId: options.panId,
-    coordinator: options.coordinator
+    coordinator: options.coordinator,
+    baudRate: options.baudRate
   });
 
   const sessionA = new XBeeSerialSession(options.portA, {
-    baudRate: options.baudRate,
+    baudRate: CONFIG_BAUD_RATE,
     name: "XBee A",
     logger
   });
   const sessionB = new XBeeSerialSession(options.portB, {
-    baudRate: options.baudRate,
+    baudRate: CONFIG_BAUD_RATE,
     name: "XBee B",
     logger
   });
@@ -532,7 +557,7 @@ export async function pairXBees(options) {
     const slA = await sessionA.readSerialLow();
     const slB = await sessionB.readSerialLow();
 
-    logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.coordinator}`);
+    logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.coordinator} / 通信ボーレート=${options.baudRate} bps`);
     logger(`[PLAN] XBee A の SL=${slA} を XBee B の DL に設定します`);
     logger(`[PLAN] XBee B の SL=${slB} を XBee A の DL に設定します`);
 
@@ -553,11 +578,13 @@ export async function pairXBees(options) {
     await sessionB.sendOkCommand("ATCN\r", "ATCN");
 
     logger("[DONE] ペアリング設定の書き込みが完了しました");
+    logger(`[NOTE] XBee 同士の通信ボーレートを ${options.baudRate} bps に設定しました。変更を有効にするため、両方の XBee を再起動（電源 OFF/ON）してください`);
     return {
       normalizedPanId: plan.normalizedPanId,
       slA,
       slB,
-      roles: plan.roles
+      roles: plan.roles,
+      baudRate: options.baudRate
     };
   } finally {
     await Promise.allSettled([sessionA.close(), sessionB.close()]);
@@ -574,7 +601,7 @@ export async function pairXBees(options) {
  * @returns {Promise<number | null>}
  */
 export async function findWorkingBaudRate(port, options) {
-  const candidates = options.candidates ?? [9600, 38400, 115200, 19200, 57600];
+  const candidates = options.candidates ?? [9600];
   const logger = options.logger ?? (() => {});
 
   for (const baudRate of candidates) {

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   analyzeResponseLines,
   appendResponseChunk,
+  baudRateToAtbd,
   buildPairingPlan,
   extractCompleteLines,
   normalizePanId,
@@ -126,21 +127,32 @@ test("sanitizeHex32 は 1〜8 桁の16進数のみを受け付ける", () => {
   assert.throws(() => sanitizeHex32("xyz"), /SL\/DL/);
 });
 
+test("baudRateToAtbd はボーレートを ATBD コードに変換する", () => {
+  assert.equal(baudRateToAtbd(9600), "3");
+  assert.equal(baudRateToAtbd(38400), "5");
+  assert.equal(baudRateToAtbd(115200), "7");
+});
+
+test("baudRateToAtbd は未対応のボーレートを拒否する", () => {
+  assert.throws(() => baudRateToAtbd(12345), /未対応/);
+});
+
 test("buildPairingPlan は Coordinator=A の計画を返す", () => {
-  const plan = buildPairingPlan({ panId: "0x7b", coordinator: "A" });
+  const plan = buildPairingPlan({ panId: "0x7b", coordinator: "A", baudRate: 9600 });
   assert.equal(plan.normalizedPanId, "7B");
   assert.deepEqual(plan.roles, { A: "1", B: "0" });
-  assert.deepEqual(plan.commandsForA, ["ATID7B\r", "ATCE1\r"]);
-  assert.deepEqual(plan.commandsForB, ["ATID7B\r", "ATCE0\r"]);
+  assert.deepEqual(plan.commandsForA, ["ATID7B\r", "ATCE1\r", "ATBD3\r"]);
+  assert.deepEqual(plan.commandsForB, ["ATID7B\r", "ATCE0\r", "ATBD3\r"]);
 });
 
 test("buildPairingPlan は Coordinator=B の計画を返す", () => {
-  const plan = buildPairingPlan({ panId: "ABCD", coordinator: "B" });
+  const plan = buildPairingPlan({ panId: "ABCD", coordinator: "B", baudRate: 38400 });
   assert.deepEqual(plan.roles, { A: "0", B: "1" });
+  assert.equal(plan.baudRate, 38400);
 });
 
 test("buildPairingPlan は不正な Coordinator を拒否する", () => {
-  assert.throws(() => buildPairingPlan({ panId: "1234", coordinator: /** @type {any} */ ("C") }), /Coordinator/);
+  assert.throws(() => buildPairingPlan({ panId: "1234", coordinator: /** @type {any} */ ("C"), baudRate: 9600 }), /Coordinator/);
 });
 
 test("extractCompleteLines は CR/LF 混在の完全な行だけを返す", () => {
