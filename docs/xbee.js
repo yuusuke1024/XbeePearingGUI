@@ -53,6 +53,42 @@ export function buildPairingPlan({ panId, coordinator }) {
 }
 
 /**
+ * @param {string} buffer
+ * @returns {{ lines: string[], remainder: string }}
+ */
+export function extractCompleteLines(buffer) {
+  const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const trailingNewline = normalized.endsWith("\n");
+  const parts = normalized.split("\n");
+  const remainder = trailingNewline ? "" : parts.pop() ?? "";
+  const lines = parts.map((line) => line.trim()).filter(Boolean);
+  return { lines, remainder };
+}
+
+/**
+ * @param {{ lines: string[], remainder: string }} state
+ * @param {string} chunkText
+ * @returns {{ lines: string[], remainder: string }}
+ */
+export function appendResponseChunk(state, chunkText) {
+  const next = extractCompleteLines(`${state.remainder}${chunkText}`);
+  return {
+    lines: [...state.lines, ...next.lines],
+    remainder: next.remainder
+  };
+}
+
+/**
+ * @param {string[]} lines
+ * @returns {{ hasOk: boolean, valueLine: string | null }}
+ */
+export function analyzeResponseLines(lines) {
+  const hasOk = lines.some((line) => /^OK$/i.test(line));
+  const valueLine = lines.find((line) => !/^OK$/i.test(line)) ?? null;
+  return { hasOk, valueLine };
+}
+
+/**
  * @param {number} ms
  * @returns {Promise<void>}
  */
@@ -60,27 +96,6 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-/**
- * @param {Uint8Array} chunk
- * @returns {string}
- */
-function decodeChunk(chunk) {
-  return new TextDecoder().decode(chunk);
-}
-
-/**
- * @param {string} buffer
- * @returns {{ lines: string[], remainder: string }}
- */
-function extractCompleteLines(buffer) {
-  const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const trailingNewline = normalized.endsWith("\n");
-  const parts = normalized.split("\n");
-  const remainder = trailingNewline ? "" : parts.pop() ?? "";
-  const lines = parts.map((line) => line.trim()).filter(Boolean);
-  return { lines, remainder };
 }
 
 export class XBeeSerialSession {
@@ -137,7 +152,7 @@ export class XBeeSerialSession {
         Promise.race([
           this.reader.cancel().catch(() => {}),
           delay(CLOSE_TIMEOUT_MS)
-        ]).then(async () => {
+        ]).then(() => {
           this.reader?.releaseLock();
           this.reader = null;
         })
@@ -201,15 +216,21 @@ export class XBeeSerialSession {
     this.log(`${options.label} を送信します`);
     this.buffer = "";
     await this.writeRaw(command);
-    const lines = await this.readUntilComplete(options.label, COMMAND_TIMEOUT_MS);
+    const lines = await this.readResponse(options.label, COMMAND_TIMEOUT_MS, {
+      acceptValue: options.expectValue
+    });
+    const analysis = analyzeResponseLines(lines);
 
     if (options.expectValue) {
-      const valueLine = lines.find((line) => !/^OK$/i.test(line));
-      if (!valueLine) {
+      if (!analysis.valueLine) {
         throw new Error(`${this.name}: ${options.label} の応答値を受信できませんでした。`);
       }
-      this.log(`${options.label} 応答値: ${valueLine}`);
-      return valueLine;
+      this.log(`${options.label} 応答値: ${analysis.valueLine}`);
+      return analysis.valueLine;
+    }
+
+    if (!analysis.hasOk) {
+      throw new Error(`${this.name}: ${options.label} の応答が OK ではありませんでした。`);
     }
 
     this.log(`${options.label} OK`);
@@ -231,8 +252,9 @@ export class XBeeSerialSession {
    * @param {string} context
    */
   async expectOk(timeoutMs, context) {
-    const lines = await this.readUntilComplete(context, timeoutMs);
-    if (!lines.some((line) => /^OK$/i.test(line))) {
+    const lines = await this.readResponse(context, timeoutMs, { acceptValue: false });
+    const analysis = analyzeResponseLines(lines);
+    if (!analysis.hasOk) {
       throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。`);
     }
     this.log(`${context}: OK`);
@@ -241,15 +263,17 @@ export class XBeeSerialSession {
   /**
    * @param {string} context
    * @param {number} timeoutMs
+   * @param {{ acceptValue: boolean }} options
    * @returns {Promise<string[]>}
    */
-  async readUntilComplete(context, timeoutMs) {
+  async readResponse(context, timeoutMs, options) {
     if (!this.reader) {
       throw new Error(`${this.name}: reader が利用できません。`);
     }
 
     const deadline = Date.now() + timeoutMs;
-    const collected = [];
+    let state = { lines: [], remainder: this.buffer };
+    this.buffer = "";
 
     while (Date.now() < deadline) {
       const { value, done } = await Promise.race([
@@ -265,20 +289,21 @@ export class XBeeSerialSession {
         continue;
       }
 
-      this.buffer += this.decoder.decode(value, { stream: true });
-      const { lines, remainder } = extractCompleteLines(this.buffer);
-      this.buffer = remainder;
+      state = appendResponseChunk(state, this.decoder.decode(value, { stream: true }));
+      const analysis = analyzeResponseLines(state.lines);
 
-      if (lines.length === 0) {
-        continue;
+      if (options.acceptValue && analysis.valueLine) {
+        this.buffer = state.remainder;
+        return state.lines;
       }
 
-      collected.splice(0, collected.length, ...lines);
-      if (lines.some((line) => /^OK$/i.test(line))) {
-        return lines;
+      if (analysis.hasOk) {
+        this.buffer = state.remainder;
+        return state.lines;
       }
     }
 
+    this.buffer = state.remainder;
     throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。`);
   }
 
