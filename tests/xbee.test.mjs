@@ -296,6 +296,7 @@ test("analyzeResponseState は remainder の未終端値を値として扱う", 
 test("analyzeResponseState は remainder が OK の場合は値としない", () => {
   const result = analyzeResponseState([], "OK");
   assert.equal(result.valueLine, null);
+  assert.equal(result.hasOk, true);
 });
 
 test("analyzeResponseState は完全行の値を優先する", () => {
@@ -310,5 +311,24 @@ test("readSerialLow は \\r 終端なしの値応答でも成功する", async (
   ]);
   assert.equal(await session.readSerialLow(), "418CDC");
   assert.deepEqual(port.writer.writes, ["ATSL\r"]);
+  await session.close();
+});
+
+test("readSerialLow は値が分割到着しても完全な値を返す", async () => {
+  const { session } = await openTestSession([
+    { command: "ATSL\r", chunks: [{ text: "4" }, { text: "18CDC\r", delayMs: 1 }] }
+  ]);
+  assert.equal(await session.readSerialLow(), "418CDC");
+  await session.close();
+});
+
+test("sendOkCommand は \\r 終端なしの OK 応答でも成功する", async () => {
+  const { session, port } = await openTestSession([
+    { command: "ATID1\r", chunks: [{ text: "OK" }] }
+  ]);
+  await assert.doesNotReject(async () => {
+    await session.sendOkCommand("ATID1\r", "ATID1");
+  });
+  assert.deepEqual(port.writer.writes, ["ATID1\r"]);
   await session.close();
 });

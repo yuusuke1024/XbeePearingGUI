@@ -133,12 +133,17 @@ export function analyzeResponseLines(lines) {
  */
 export function analyzeResponseState(lines, remainder) {
   const analysis = analyzeResponseLines(lines);
+  const trimmedRemainder = remainder.trim();
+  const remainderIsOk = trimmedRemainder !== "" && /^OK$/i.test(trimmedRemainder);
+
   if (analysis.valueLine) {
-    return { ...analysis, valueFromRemainder: false };
+    return { hasOk: analysis.hasOk || remainderIsOk, valueLine: analysis.valueLine, valueFromRemainder: false };
   }
-  const trimmed = remainder.trim();
-  if (trimmed && !/^OK$/i.test(trimmed)) {
-    return { hasOk: analysis.hasOk, valueLine: trimmed, valueFromRemainder: true };
+  if (remainderIsOk) {
+    return { hasOk: true, valueLine: null, valueFromRemainder: false };
+  }
+  if (trimmedRemainder) {
+    return { hasOk: analysis.hasOk, valueLine: trimmedRemainder, valueFromRemainder: true };
   }
   return { hasOk: analysis.hasOk, valueLine: null, valueFromRemainder: false };
 }
@@ -197,6 +202,8 @@ export class XBeeSerialSession {
     this.readLoopPromise = null;
     this.readLoopError = null;
     this.needsInputFlush = false;
+    this.inputSequence = 0;
+    this.lastSeenSequence = 0;
     this.commandTimeoutMs = options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS;
     this.enterCommandTimeoutMs = options.enterCommandTimeoutMs ?? ENTER_COMMAND_TIMEOUT_MS;
     this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
@@ -274,6 +281,8 @@ export class XBeeSerialSession {
     this.readLoopPromise = null;
     this.readLoopError = null;
     this.needsInputFlush = false;
+    this.inputSequence = 0;
+    this.lastSeenSequence = 0;
   }
 
   async enterCommandMode() {
@@ -383,19 +392,19 @@ export class XBeeSerialSession {
       const state = analyzeResponseState(this.responseLines, this.responseRemainder);
 
       if (state.hasOk) {
+        if (this.responseRemainder.trim()) {
+          this.promoteRemainderToLine();
+        }
         const lines = this.consumeResponseLines();
         this.needsInputFlush = false;
         return lines;
       }
 
-      if (options.acceptValue && state.valueLine && settleDeadline === null) {
+      if (options.acceptValue && state.valueLine && !state.valueFromRemainder && settleDeadline === null) {
         settleDeadline = Date.now() + this.valueSettleTimeoutMs;
       }
 
       if (options.acceptValue && state.valueLine && settleDeadline !== null && Date.now() >= settleDeadline) {
-        if (state.valueFromRemainder) {
-          this.promoteRemainderToLine();
-        }
         const lines = this.consumeResponseLines();
         this.needsInputFlush = true;
         return lines;
@@ -452,6 +461,7 @@ export class XBeeSerialSession {
           );
           this.responseLines = next.lines;
           this.responseRemainder = next.remainder;
+          this.inputSequence += 1;
           this.notifyInputWaiters();
         }
       }
@@ -472,7 +482,8 @@ export class XBeeSerialSession {
       throw this.readLoopError;
     }
 
-    if (this.responseLines.length > 0 || this.responseRemainder) {
+    if (this.inputSequence !== this.lastSeenSequence) {
+      this.lastSeenSequence = this.inputSequence;
       return Promise.resolve(true);
     }
 
@@ -522,6 +533,7 @@ export class XBeeSerialSession {
   clearResponseBuffer() {
     this.responseLines = [];
     this.responseRemainder = "";
+    this.lastSeenSequence = this.inputSequence;
   }
 
   consumeResponseLines() {
