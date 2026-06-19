@@ -101,6 +101,26 @@
         <pre id="logOutput" class="log-output" aria-live="polite"></pre>
       </section>
 
+      <section class="panel panel-wireless" aria-labelledby="wireless-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">無線通信確認</p>
+            <h2 id="wireless-title">XBee 同士の送受信テスト</h2>
+          </div>
+          <button id="clearWirelessLogButton" class="ghost-button" type="button">ログを消去</button>
+        </div>
+
+        <div class="wireless-controls">
+          <label class="field wireless-message-field">
+            <span>テスト送信データ</span>
+            <input id="wirelessMessage" name="wirelessMessage" type="text" maxlength="80" value="XBee wireless test" autocomplete="off" />
+          </label>
+          <button id="runWirelessTestButton" class="primary-button" type="button">無線送受信を確認</button>
+        </div>
+        <p id="wirelessStatus" class="wireless-status" role="status" aria-live="polite">ペアリング設定後、A→B と B→A の両方向で実データを送受信します。</p>
+        <pre id="wirelessLogOutput" class="log-output wireless-log-output" aria-live="polite"></pre>
+      </section>
+
       <section class="panel panel-notes" aria-labelledby="notes-title">
         <div class="panel-header">
           <div>

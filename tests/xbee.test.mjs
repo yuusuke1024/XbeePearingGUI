@@ -9,10 +9,13 @@ import {
   buildApiNetworkPlan,
   buildBaudRateCandidates,
   buildPairingPlan,
+  buildWirelessTestFrame,
   extractCompleteLines,
   openCommandModeSession,
   normalizePanId,
+  normalizeWirelessTestPayload,
   sanitizeHex32,
+  verifyTransparentWirelessLink,
   XBeeSerialSession
 } from "../docs/xbee.js";
 
@@ -105,6 +108,95 @@ function createFakeSerialPort(script) {
   };
 }
 
+function createLinkedTransparentPorts() {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  function createEndpoint() {
+    const queue = [];
+    const pendingReaders = [];
+    const openOptions = [];
+    let peer = null;
+    let cancelled = false;
+
+    function enqueue(bytes) {
+      if (cancelled) {
+        return;
+      }
+      const item = { value: bytes, done: false };
+      if (pendingReaders.length > 0) {
+        pendingReaders.shift()(item);
+        return;
+      }
+      queue.push(item);
+    }
+
+    const reader = {
+      async read() {
+        if (queue.length > 0) {
+          return queue.shift();
+        }
+        if (cancelled) {
+          return { value: undefined, done: true };
+        }
+        return new Promise((resolve) => {
+          pendingReaders.push(resolve);
+        });
+      },
+      async cancel() {
+        cancelled = true;
+        while (pendingReaders.length > 0) {
+          pendingReaders.shift()({ value: undefined, done: true });
+        }
+      },
+      releaseLock() {}
+    };
+
+    const writer = {
+      writes: [],
+      async write(bytes) {
+        this.writes.push(decoder.decode(bytes));
+        setTimeout(() => peer.enqueue(bytes), 0);
+      },
+      releaseLock() {}
+    };
+
+    return {
+      isOpen: false,
+      readable: {
+        getReader() {
+          return reader;
+        }
+      },
+      writable: {
+        getWriter() {
+          return writer;
+        }
+      },
+      async open(options) {
+        cancelled = false;
+        openOptions.push(options);
+        this.isOpen = true;
+      },
+      async close() {
+        this.isOpen = false;
+      },
+      setPeer(nextPeer) {
+        peer = nextPeer;
+      },
+      enqueue,
+      writer,
+      openOptions
+    };
+  }
+
+  const portA = createEndpoint();
+  const portB = createEndpoint();
+  portA.setPeer(portB);
+  portB.setPeer(portA);
+  return { portA, portB };
+}
+
 async function openTestSession(script) {
   const port = createFakeSerialPort(script);
   const session = new XBeeSerialSession(port, {
@@ -189,6 +281,16 @@ test("buildApiNetworkPlan は 2 台以下を拒否する", () => {
 
 test("buildApiNetworkPlan は範囲外の Coordinator を拒否する", () => {
   assert.throws(() => buildApiNetworkPlan({ panId: "1234", coordinatorIndex: 3, baudRate: 9600, deviceCount: 3 }), /Coordinator/);
+});
+
+test("normalizeWirelessTestPayload は空欄なら既定値を返し、改行を除去する", () => {
+  assert.equal(normalizeWirelessTestPayload(""), "XBee wireless test");
+  assert.equal(normalizeWirelessTestPayload("  hello\r\nworld  "), "hello world");
+});
+
+test("buildWirelessTestFrame は方向とペイロードを含む1行の送信データを作る", () => {
+  const frame = buildWirelessTestFrame("a2b", "hello");
+  assert.match(frame, /^\[A2B:[A-Z0-9]+:[A-F0-9]{6}\] hello\n$/);
 });
 
 test("extractCompleteLines は CR/LF 混在の完全な行だけを返す", () => {
@@ -388,4 +490,27 @@ test("sendOkCommand は \\r 終端なしの OK 応答でも成功する", async 
   });
   assert.deepEqual(port.writer.writes, ["ATID1\r"]);
   await session.close();
+});
+
+test("verifyTransparentWirelessLink は透過モードで A→B と B→A の受信を確認する", async () => {
+  const { portA, portB } = createLinkedTransparentPorts();
+  const logs = [];
+
+  const result = await verifyTransparentWirelessLink({
+    portA,
+    portB,
+    baudRate: 9600,
+    payload: "ping",
+    timeoutMs: 100,
+    logger: (message) => logs.push(message)
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.results.length, 2);
+  assert.deepEqual(result.results.map((item) => item.direction), ["A→B", "B→A"]);
+  assert.equal(portA.openOptions[0].baudRate, 9600);
+  assert.equal(portB.openOptions[0].baudRate, 9600);
+  assert.equal(portA.writer.writes.length, 1);
+  assert.equal(portB.writer.writes.length, 1);
+  assert.ok(logs.some((message) => message.includes("[DONE]")));
 });

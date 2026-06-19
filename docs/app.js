@@ -1,4 +1,4 @@
-import { configureApiNetwork, findWorkingBaudRate, normalizePanId, pairXBees } from "./xbee.js";
+import { configureApiNetwork, findWorkingBaudRate, normalizePanId, pairXBees, verifyTransparentWirelessLink } from "./xbee.js";
 
 const MAX_API_DEVICE_COUNT = 12;
 const DEVICE_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -6,7 +6,9 @@ const DEVICE_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const form = /** @type {HTMLFormElement} */ (document.getElementById("pairingForm"));
 const runButton = /** @type {HTMLButtonElement} */ (document.getElementById("runButton"));
 const testConnectionButton = /** @type {HTMLButtonElement} */ (document.getElementById("testConnectionButton"));
+const runWirelessTestButton = /** @type {HTMLButtonElement} */ (document.getElementById("runWirelessTestButton"));
 const clearLogButton = /** @type {HTMLButtonElement} */ (document.getElementById("clearLogButton"));
+const clearWirelessLogButton = /** @type {HTMLButtonElement} */ (document.getElementById("clearWirelessLogButton"));
 const selectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortAButton"));
 const selectPortBButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortBButton"));
 const disconnectPortAButton = /** @type {HTMLButtonElement} */ (document.getElementById("disconnectPortAButton"));
@@ -18,9 +20,12 @@ const deviceGrid = /** @type {HTMLDivElement} */ (document.getElementById("devic
 const baudRateSelect = /** @type {HTMLSelectElement} */ (document.getElementById("baudRate"));
 const panIdInput = /** @type {HTMLInputElement} */ (document.getElementById("panId"));
 const coordinatorSelect = /** @type {HTMLSelectElement} */ (document.getElementById("coordinator"));
+const wirelessMessageInput = /** @type {HTMLInputElement} */ (document.getElementById("wirelessMessage"));
 const supportBadge = /** @type {HTMLSpanElement} */ (document.getElementById("supportBadge"));
 const supportMessage = /** @type {HTMLParagraphElement} */ (document.getElementById("supportMessage"));
+const wirelessStatus = /** @type {HTMLParagraphElement} */ (document.getElementById("wirelessStatus"));
 const logOutput = /** @type {HTMLPreElement} */ (document.getElementById("logOutput"));
+const wirelessLogOutput = /** @type {HTMLPreElement} */ (document.getElementById("wirelessLogOutput"));
 
 /** @type {Record<string, SerialPort | null>} */
 const selectedPorts = {
@@ -54,6 +59,21 @@ function appendLog(message) {
   const timestamp = new Date().toLocaleTimeString("ja-JP", { hour12: false });
   logOutput.textContent += `[${timestamp}] ${message}\n`;
   logOutput.scrollTop = logOutput.scrollHeight;
+}
+
+function appendWirelessLog(message) {
+  const timestamp = new Date().toLocaleTimeString("ja-JP", { hour12: false });
+  wirelessLogOutput.textContent += `[${timestamp}] ${message}\n`;
+  wirelessLogOutput.scrollTop = wirelessLogOutput.scrollHeight;
+}
+
+/**
+ * @param {string} message
+ * @param {"neutral"|"ok"|"ng"} state
+ */
+function setWirelessStatus(message, state = "neutral") {
+  wirelessStatus.textContent = message;
+  wirelessStatus.className = `wireless-status${state === "ok" ? " is-ok" : state === "ng" ? " is-ng" : ""}`;
 }
 
 function setSupportState() {
@@ -120,12 +140,15 @@ function deviceLabel(side) {
 function setBusy(isBusy) {
   runButton.disabled = isBusy || !supportsWebSerial();
   testConnectionButton.disabled = isBusy || !supportsWebSerial();
+  runWirelessTestButton.disabled = isBusy || !supportsWebSerial() || isApiModeEnabled();
   clearLogButton.disabled = isBusy;
+  clearWirelessLogButton.disabled = isBusy;
   apiModeCheckbox.disabled = isBusy;
   addApiDeviceButton.disabled = isBusy || !supportsWebSerial() || !isApiModeEnabled() || Object.keys(selectedPorts).length >= MAX_API_DEVICE_COUNT;
   baudRateSelect.disabled = isBusy;
   panIdInput.disabled = isBusy;
   coordinatorSelect.disabled = isBusy;
+  wirelessMessageInput.disabled = isBusy;
 
   for (const side of Object.keys(selectedPorts)) {
     const elements = getDeviceElements(side);
@@ -196,6 +219,56 @@ async function testConnection() {
     }
   } catch (error) {
     appendLog(`接続テストでエラー: ${formatError(error)}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function runWirelessTest() {
+  if (!supportsWebSerial()) {
+    appendWirelessLog("Web Serial API が使えないため、無線通信テストを開始できません。");
+    setWirelessStatus("Web Serial API が利用できません。Chrome / Edge の HTTPS または localhost で開いてください。", "ng");
+    return;
+  }
+
+  if (isApiModeEnabled()) {
+    appendWirelessLog("API モード(AP=1)では透過モードの無線送受信テストは実行できません。通常の1対1ペアリングで確認してください。");
+    setWirelessStatus("API モード中は透過モードの送受信テストを実行できません。", "ng");
+    return;
+  }
+
+  if (!selectedPorts.A || !selectedPorts.B) {
+    appendWirelessLog("XBee A と XBee B の両方のポートを選択してください。");
+    setWirelessStatus("XBee A と XBee B の両方のポートが必要です。", "ng");
+    return;
+  }
+
+  if (selectedPorts.A === selectedPorts.B) {
+    appendWirelessLog("XBee A と XBee B に同じポートは使用できません。");
+    setWirelessStatus("別々のポートを選択してください。", "ng");
+    return;
+  }
+
+  const baudRate = Number(baudRateSelect.value);
+  setBusy(true);
+  setWirelessStatus("無線通信テストを実行中です...", "neutral");
+  appendWirelessLog(`無線通信テストを開始します。通信ボーレート=${baudRate} bps`);
+
+  try {
+    const result = await verifyTransparentWirelessLink({
+      portA: selectedPorts.A,
+      portB: selectedPorts.B,
+      baudRate,
+      payload: wirelessMessageInput.value,
+      logger: appendWirelessLog
+    });
+
+    if (result.ok) {
+      setWirelessStatus("A→B / B→A の両方向で送受信を確認しました。", "ok");
+    }
+  } catch (error) {
+    appendWirelessLog(`無線通信テストでエラー: ${formatError(error)}`);
+    setWirelessStatus("送受信を確認できませんでした。電源再投入、DL設定、ボーレート、アンテナ/距離を確認してください。", "ng");
   } finally {
     setBusy(false);
   }
@@ -396,6 +469,12 @@ disconnectPortBButton.addEventListener("click", async () => {
 apiModeCheckbox.addEventListener("change", () => {
   updateApiModeUi();
   appendLog(isApiModeEnabled() ? "API モード設定を ON にしました。3 台以上の XBee を選択できます。" : "通常の1対1ペアリングに戻しました。追加ノードは使用しません。");
+  setWirelessStatus(
+    isApiModeEnabled()
+      ? "API モード中は透過モードの送受信テストを実行できません。"
+      : "ペアリング設定後、A→B と B→A の両方向で実データを送受信します。",
+    isApiModeEnabled() ? "ng" : "neutral"
+  );
 });
 
 addApiDeviceButton.addEventListener("click", () => {
@@ -406,8 +485,16 @@ testConnectionButton.addEventListener("click", async () => {
   await testConnection();
 });
 
+runWirelessTestButton.addEventListener("click", async () => {
+  await runWirelessTest();
+});
+
 clearLogButton.addEventListener("click", () => {
   logOutput.textContent = "";
+});
+
+clearWirelessLogButton.addEventListener("click", () => {
+  wirelessLogOutput.textContent = "";
 });
 
 form.addEventListener("submit", async (event) => {
@@ -453,3 +540,4 @@ form.addEventListener("submit", async (event) => {
 setSupportState();
 updateApiModeUi();
 appendLog("準備完了。通常は XBee 2 台、API モードでは 3 台以上のポートを選択してから実行してください。");
+appendWirelessLog("準備完了。ペアリング後に無線送受信を確認できます。");

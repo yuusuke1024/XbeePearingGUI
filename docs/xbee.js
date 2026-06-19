@@ -3,6 +3,8 @@ const ENTER_COMMAND_TIMEOUT_MS = 2500;
 const COMMAND_TIMEOUT_MS = 2500;
 const CLOSE_TIMEOUT_MS = 1000;
 const VALUE_SETTLE_TIMEOUT_MS = 80;
+const WIRELESS_TEST_TIMEOUT_MS = 3000;
+const WIRELESS_TEST_PAYLOAD_MAX_LENGTH = 80;
 
 const BAUD_RATE_ATBD_TABLE = {
   1200: "0",
@@ -16,6 +18,29 @@ const BAUD_RATE_ATBD_TABLE = {
 };
 
 export const DEFAULT_BAUD_RATE_CANDIDATES = [9600, 38400, 115200, 57600, 19200, 4800, 2400, 1200];
+
+/**
+ * @param {string} input
+ * @returns {string}
+ */
+export function normalizeWirelessTestPayload(input) {
+  const normalized = String(input ?? "").replace(/[\r\n]+/g, " ").trim();
+  if (!normalized) {
+    return "XBee wireless test";
+  }
+  return normalized.slice(0, WIRELESS_TEST_PAYLOAD_MAX_LENGTH);
+}
+
+/**
+ * @param {string} direction
+ * @param {string} payload
+ * @returns {string}
+ */
+export function buildWirelessTestFrame(direction, payload) {
+  const safeDirection = String(direction ?? "LINK").replace(/[^A-Z0-9_-]/gi, "").toUpperCase() || "LINK";
+  const suffix = Math.random().toString(16).slice(2, 8).toUpperCase();
+  return `[${safeDirection}:${Date.now().toString(36).toUpperCase()}:${suffix}] ${normalizeWirelessTestPayload(payload)}\n`;
+}
 
 /**
  * @param {number | number[]} preferred
@@ -641,6 +666,277 @@ export class XBeeSerialSession {
    */
   log(message) {
     this.logger(`[${this.name}] ${message}`);
+  }
+}
+
+class TransparentSerialSession {
+  /**
+   * @param {SerialPort} port
+   * @param {{
+   *   baudRate: number,
+   *   name: string,
+   *   logger?: (message: string) => void,
+   *   closeTimeoutMs?: number
+   * }} options
+   */
+  constructor(port, options) {
+    this.port = port;
+    this.baudRate = options.baudRate;
+    this.name = options.name;
+    this.logger = options.logger ?? (() => {});
+    this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
+    this.reader = null;
+    this.writer = null;
+    this.decoder = new TextDecoder();
+    this.encoder = new TextEncoder();
+    this.receivedText = "";
+    this.waiters = [];
+    this.inputSequence = 0;
+    this.lastSeenSequence = 0;
+    this.isOpen = false;
+    this.readLoopPromise = null;
+    this.readLoopError = null;
+  }
+
+  async open() {
+    if (this.isOpen) {
+      return;
+    }
+
+    await this.port.open({
+      baudRate: this.baudRate,
+      dataBits: 8,
+      stopBits: 1,
+      parity: "none",
+      flowControl: "none"
+    });
+
+    this.isOpen = true;
+    this.reader = this.port.readable?.getReader() ?? null;
+    this.writer = this.port.writable?.getWriter() ?? null;
+
+    if (!this.reader || !this.writer) {
+      throw new Error(`${this.name}: 透過モード用のシリアルストリームを取得できませんでした。`);
+    }
+
+    this.readLoopError = null;
+    this.readLoopPromise = this.readLoop();
+    this.log(`透過モードでポートを開きました (baud=${this.baudRate})`);
+  }
+
+  async close() {
+    const tasks = [];
+
+    if (this.reader) {
+      tasks.push(
+        Promise.race([
+          this.reader.cancel().catch(() => {}),
+          delay(this.closeTimeoutMs)
+        ]).then(async () => {
+          if (this.readLoopPromise) {
+            await Promise.race([
+              this.readLoopPromise.catch(() => {}),
+              delay(this.closeTimeoutMs)
+            ]);
+          }
+          this.reader?.releaseLock();
+          this.reader = null;
+        })
+      );
+    }
+
+    if (this.writer) {
+      tasks.push(
+        Promise.resolve().then(() => {
+          this.writer?.releaseLock();
+          this.writer = null;
+        })
+      );
+    }
+
+    await Promise.all(tasks);
+
+    if (this.isOpen) {
+      await this.port.close().catch(() => {});
+      this.log("透過モードのポートを閉じました");
+    }
+
+    this.isOpen = false;
+    this.receivedText = "";
+    this.waiters = [];
+    this.inputSequence = 0;
+    this.lastSeenSequence = 0;
+    this.readLoopPromise = null;
+    this.readLoopError = null;
+  }
+
+  clearInput() {
+    this.receivedText = "";
+    this.lastSeenSequence = this.inputSequence;
+  }
+
+  /**
+   * @param {string} text
+   */
+  async writeText(text) {
+    if (!this.writer) {
+      throw new Error(`${this.name}: writer が利用できません。`);
+    }
+    await this.writer.write(this.encoder.encode(text));
+    this.log(`送信: ${JSON.stringify(text.trimEnd())}`);
+  }
+
+  /**
+   * @param {string} expected
+   * @param {number} timeoutMs
+   * @returns {Promise<string>}
+   */
+  async waitForText(expected, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (this.receivedText.includes(expected)) {
+        return this.receivedText;
+      }
+
+      const didReceive = await this.waitForInput(Math.max(0, deadline - Date.now()));
+      if (!didReceive && this.receivedText.includes(expected)) {
+        return this.receivedText;
+      }
+    }
+
+    throw new Error(`${this.name}: ${timeoutMs} ms以内に期待データを受信できませんでした。受信内容=${JSON.stringify(this.receivedText)}`);
+  }
+
+  async readLoop() {
+    if (!this.reader) {
+      return;
+    }
+
+    try {
+      while (this.reader) {
+        const { value, done } = await this.reader.read();
+        if (done) {
+          break;
+        }
+        if (value) {
+          this.receivedText += this.decoder.decode(value, { stream: true });
+          this.inputSequence += 1;
+          this.notifyInputWaiters();
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      this.log(`透過モードの読み取りでエラーが発生しました: ${message}`);
+      this.readLoopError = error;
+      this.notifyInputWaiters();
+    }
+  }
+
+  /**
+   * @param {number} timeoutMs
+   * @returns {Promise<boolean>}
+   */
+  waitForInput(timeoutMs) {
+    if (this.readLoopError) {
+      throw this.readLoopError;
+    }
+
+    if (this.inputSequence !== this.lastSeenSequence) {
+      this.lastSeenSequence = this.inputSequence;
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        this.waiters = this.waiters.filter((waiter) => waiter !== resolveInput);
+        resolve(false);
+      }, timeoutMs);
+
+      const resolveInput = () => {
+        clearTimeout(timeoutId);
+        if (this.readLoopError) {
+          reject(this.readLoopError);
+          return;
+        }
+        resolve(true);
+      };
+
+      this.waiters.push(resolveInput);
+    });
+  }
+
+  notifyInputWaiters() {
+    const waiters = this.waiters.splice(0, this.waiters.length);
+    for (const waiter of waiters) {
+      waiter();
+    }
+  }
+
+  /**
+   * @param {string} message
+   */
+  log(message) {
+    this.logger(`[${this.name}] ${message}`);
+  }
+}
+
+/**
+ * @param {{
+ *   portA: SerialPort,
+ *   portB: SerialPort,
+ *   baudRate: number,
+ *   payload?: string,
+ *   timeoutMs?: number,
+ *   logger?: (message: string) => void
+ * }} options
+ */
+export async function verifyTransparentWirelessLink(options) {
+  const logger = options.logger ?? (() => {});
+  const timeoutMs = options.timeoutMs ?? WIRELESS_TEST_TIMEOUT_MS;
+  const sessionA = new TransparentSerialSession(options.portA, {
+    baudRate: options.baudRate,
+    name: "XBee A",
+    logger
+  });
+  const sessionB = new TransparentSerialSession(options.portB, {
+    baudRate: options.baudRate,
+    name: "XBee B",
+    logger
+  });
+  const frames = [
+    { label: "A→B", sender: sessionA, receiver: sessionB, frame: buildWirelessTestFrame("A2B", options.payload ?? "") },
+    { label: "B→A", sender: sessionB, receiver: sessionA, frame: buildWirelessTestFrame("B2A", options.payload ?? "") }
+  ];
+  const results = [];
+
+  try {
+    logger(`[START] 無線通信テストを開始します (baud=${options.baudRate}, timeout=${timeoutMs} ms)`);
+    await Promise.all([sessionA.open(), sessionB.open()]);
+
+    for (const item of frames) {
+      item.receiver.clearInput();
+      logger(`[${item.label}] 送信待ちデータ=${JSON.stringify(item.frame.trimEnd())}`);
+      await item.sender.writeText(item.frame);
+      const receivedText = await item.receiver.waitForText(item.frame, timeoutMs);
+      logger(`[OK] ${item.label} で期待データを受信しました`);
+      results.push({
+        direction: item.label,
+        sent: item.frame,
+        received: receivedText,
+        ok: true
+      });
+    }
+
+    logger("[DONE] A→B / B→A の無線送受信を確認しました");
+    return {
+      ok: true,
+      baudRate: options.baudRate,
+      payload: normalizeWirelessTestPayload(options.payload ?? ""),
+      results
+    };
+  } finally {
+    await Promise.allSettled([sessionA.close(), sessionB.close()]);
   }
 }
 

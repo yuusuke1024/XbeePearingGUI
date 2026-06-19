@@ -36,6 +36,7 @@ body {
   grid-template-columns: minmax(340px, 480px) minmax(360px, 1fr);
   grid-template-areas:
     "settings log"
+    "wireless log"
     "notes notes";
   gap: 16px;
   padding: 16px;
@@ -57,7 +58,14 @@ body {
   display: flex;
   flex-direction: column;
   grid-area: log;
-  height: 520px;
+  min-height: 520px;
+}
+
+.panel-wireless {
+  display: flex;
+  flex-direction: column;
+  grid-area: wireless;
+  min-height: 360px;
 }
 
 .panel-notes {
@@ -296,6 +304,29 @@ input:disabled {
   gap: 10px;
 }
 
+.wireless-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 12px;
+  align-items: end;
+}
+
+.wireless-status {
+  min-height: 22px;
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wireless-status.is-ok {
+  color: var(--success);
+}
+
+.wireless-status.is-ng {
+  color: var(--danger);
+}
+
 .log-output {
   flex: 1;
   min-height: 0;
@@ -311,6 +342,10 @@ input:disabled {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.wireless-log-output {
+  min-height: 160px;
 }
 
 .notes-list {
@@ -330,12 +365,14 @@ input:disabled {
     grid-template-areas:
       "settings"
       "log"
+      "wireless"
       "notes";
   }
 
   .device-grid,
   .field-row,
-  .api-device-controls {
+  .api-device-controls,
+  .wireless-controls {
     grid-template-columns: 1fr;
   }
 }
