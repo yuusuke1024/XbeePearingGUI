@@ -1036,7 +1036,7 @@ export async function openCommandModeSession(port, options) {
       baudRate,
       name: options.name,
       logger,
-      commandTimeoutMs: options.commandTimeoutMs ?? 1000,
+      commandTimeoutMs: options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS,
       enterCommandTimeoutMs: options.enterCommandTimeoutMs ?? 1000,
       closeTimeoutMs: options.closeTimeoutMs ?? 500,
       valueSettleTimeoutMs: options.valueSettleTimeoutMs ?? 50
@@ -1070,6 +1070,10 @@ export async function openCommandModeSession(port, options) {
  *   panId: string,
  *   coordinatorIndex: number,
  *   names?: string[],
+ *   commandTimeoutMs?: number,
+ *   enterCommandTimeoutMs?: number,
+ *   closeTimeoutMs?: number,
+ *   valueSettleTimeoutMs?: number,
  *   logger?: (message: string) => void
  * }} options
  */
@@ -1082,66 +1086,54 @@ export async function configureApiNetwork(options) {
     deviceCount: options.ports.length
   });
   const baudRateCandidates = buildBaudRateCandidates(options.baudRate);
-  /** @type {(XBeeSerialSession | null)[]} */
-  const sessions = Array.from({ length: options.ports.length }, () => null);
+  /** @type {(string | null)[]} */
+  const serialLows = Array.from({ length: options.ports.length }, () => null);
 
-  try {
-    logger(`[SCAN] API モード設定対象: ${options.ports.length} 台`);
-    logger(`[SCAN] UART ボーレート候補: ${baudRateCandidates.join(", ")} bps`);
+  logger(`[SCAN] API モード設定対象: ${options.ports.length} 台`);
+  logger(`[SCAN] UART ボーレート候補: ${baudRateCandidates.join(", ")} bps`);
+  logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.names?.[options.coordinatorIndex] ?? deviceIndexToName(options.coordinatorIndex)} / 通信ボーレート=${options.baudRate} bps / AP=1`);
+  logger("[PLAN] API モードでは宛先を API フレームで指定するため、DL は変更しません");
 
-    for (let index = 0; index < options.ports.length; index += 1) {
-      const name = options.names?.[index] ?? deviceIndexToName(index);
-      sessions[index] = await openCommandModeSession(options.ports[index], {
+  for (let index = 0; index < options.ports.length; index += 1) {
+    const name = options.names?.[index] ?? deviceIndexToName(index);
+    const roleLabel = plan.roles[index] === "1" ? "Coordinator" : "Router";
+    let session = null;
+
+    try {
+      session = await openCommandModeSession(options.ports[index], {
         name,
         candidates: baudRateCandidates,
-        logger
+        logger,
+        commandTimeoutMs: options.commandTimeoutMs,
+        enterCommandTimeoutMs: options.enterCommandTimeoutMs,
+        closeTimeoutMs: options.closeTimeoutMs,
+        valueSettleTimeoutMs: options.valueSettleTimeoutMs
       });
-      logger(`[SCAN] ${name}=${sessions[index]?.baudRate} bps で設定通信します`);
-    }
+      logger(`[SCAN] ${name}=${session.baudRate} bps で設定通信します`);
+      logger(`[PLAN] ${name} / ${roleLabel} / AP=1`);
+      logger(`[PLAN] ${name} の SL 読み取りは行いません。API モードでは DL ではなく API フレームで宛先を指定します`);
 
-    const serialLows = [];
-    for (let index = 0; index < sessions.length; index += 1) {
-      const session = sessions[index];
-      if (!session) {
-        throw new Error(`${options.names?.[index] ?? deviceIndexToName(index)} のセッションを開始できませんでした。`);
-      }
-      serialLows[index] = await session.readSerialLow();
-    }
-
-    logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.names?.[options.coordinatorIndex] ?? deviceIndexToName(options.coordinatorIndex)} / 通信ボーレート=${options.baudRate} bps / AP=1`);
-    logger("[PLAN] API モードでは宛先を API フレームで指定するため、DL は変更しません");
-
-    for (let index = 0; index < sessions.length; index += 1) {
-      const session = sessions[index];
-      if (!session) {
-        throw new Error(`${options.names?.[index] ?? deviceIndexToName(index)} のセッションを開始できませんでした。`);
-      }
-      const roleLabel = plan.roles[index] === "1" ? "Coordinator" : "Router";
-      logger(`[PLAN] ${options.names?.[index] ?? deviceIndexToName(index)} SL=${serialLows[index]} / ${roleLabel} / AP=1`);
       for (const command of plan.commandsForDevices[index]) {
         await session.sendOkCommand(command, command.trim());
       }
+      await session.sendOkCommand("ATWR\r", "ATWR");
+      await session.sendOkCommand("ATCN\r", "ATCN");
+      logger(`[DONE] ${name} の API モード設定を書き込みました`);
+    } finally {
+      await session?.close().catch(() => {});
     }
-
-    for (const session of sessions) {
-      await session?.sendOkCommand("ATWR\r", "ATWR");
-    }
-    for (const session of sessions) {
-      await session?.sendOkCommand("ATCN\r", "ATCN");
-    }
-
-    logger("[DONE] API モード設定の書き込みが完了しました");
-    logger(`[NOTE] AP=1 にした後は XBee の UART 通信が API フレーム形式になります。変更を有効にするため、すべての XBee を再起動（電源 OFF/ON）してください`);
-    return {
-      normalizedPanId: plan.normalizedPanId,
-      serialLows,
-      roles: plan.roles,
-      baudRate: options.baudRate,
-      apiMode: plan.apiMode
-    };
-  } finally {
-    await Promise.allSettled(sessions.map((session) => session?.close()));
   }
+
+  logger("[DONE] API モード設定の書き込みが完了しました");
+  logger(`[NOTE] AP=1 にした後は XBee の UART 通信が API フレーム形式になります。変更を有効にするため、すべての XBee を再起動（電源 OFF/ON）してください`);
+  return {
+    normalizedPanId: plan.normalizedPanId,
+    serialLows,
+    roles: plan.roles,
+    baudRate: options.baudRate,
+    apiMode: plan.apiMode,
+    deviceCount: options.ports.length
+  };
 }
 
 /**

@@ -515,7 +515,7 @@ form.addEventListener("submit", async (event) => {
         logger: appendLog
       });
 
-      appendLog(`完了: PAN ID=${result.normalizedPanId}, AP=${result.apiMode}, 台数=${result.serialLows.length}`);
+      appendLog(`完了: PAN ID=${result.normalizedPanId}, AP=${result.apiMode}, 台数=${result.deviceCount}`);
       return;
     }
 

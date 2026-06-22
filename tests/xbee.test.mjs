@@ -10,6 +10,7 @@ import {
   buildBaudRateCandidates,
   buildPairingPlan,
   buildWirelessTestFrame,
+  configureApiNetwork,
   extractCompleteLines,
   openCommandModeSession,
   normalizePanId,
@@ -281,6 +282,64 @@ test("buildApiNetworkPlan は 2 台以下を拒否する", () => {
 
 test("buildApiNetworkPlan は範囲外の Coordinator を拒否する", () => {
   assert.throws(() => buildApiNetworkPlan({ panId: "1234", coordinatorIndex: 3, baudRate: 9600, deviceCount: 3 }), /Coordinator/);
+});
+
+test("configureApiNetwork は API 設定で ATSL を読まず各台を順番に書き込む", async () => {
+  const scripts = [
+    [
+      { command: "+++", chunks: [{ text: "OK\r" }] },
+      { command: "ATID77\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATCE0\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATBD3\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATAP1\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATWR\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATCN\r", chunks: [{ text: "OK\r" }] }
+    ],
+    [
+      { command: "+++", chunks: [{ text: "OK\r" }] },
+      { command: "ATID77\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATCE1\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATBD3\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATAP1\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATWR\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATCN\r", chunks: [{ text: "OK\r" }] }
+    ],
+    [
+      { command: "+++", chunks: [{ text: "OK\r" }] },
+      { command: "ATID77\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATCE0\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATBD3\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATAP1\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATWR\r", chunks: [{ text: "OK\r" }] },
+      { command: "ATCN\r", chunks: [{ text: "OK\r" }] }
+    ]
+  ];
+  const ports = scripts.map((script) => createFakeSerialPort(script));
+
+  const result = await configureApiNetwork({
+    ports,
+    baudRate: 9600,
+    panId: "77",
+    coordinatorIndex: 1,
+    names: ["XBee A", "XBee B", "XBee C"],
+    commandTimeoutMs: 40,
+    enterCommandTimeoutMs: 40,
+    closeTimeoutMs: 5,
+    valueSettleTimeoutMs: 10,
+    logger: () => {}
+  });
+
+  assert.equal(result.deviceCount, 3);
+  assert.deepEqual(result.roles, ["0", "1", "0"]);
+  for (const port of ports) {
+    assert.equal(port.writer.writes.includes("ATSL\r"), false);
+    assert.deepEqual(port.openOptions.map((options) => options.baudRate), [9600]);
+  }
+  assert.deepEqual(ports.map((port) => port.writer.writes), [
+    ["+++", "ATID77\r", "ATCE0\r", "ATBD3\r", "ATAP1\r", "ATWR\r", "ATCN\r"],
+    ["+++", "ATID77\r", "ATCE1\r", "ATBD3\r", "ATAP1\r", "ATWR\r", "ATCN\r"],
+    ["+++", "ATID77\r", "ATCE0\r", "ATBD3\r", "ATAP1\r", "ATWR\r", "ATCN\r"]
+  ]);
 });
 
 test("normalizeWirelessTestPayload は空欄なら既定値を返し、改行を除去する", () => {
