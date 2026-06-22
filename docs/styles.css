@@ -34,12 +34,14 @@ body {
 .layout {
   display: grid;
   grid-template-columns: minmax(340px, 480px) minmax(360px, 1fr);
+  grid-template-rows: 520px 300px auto;
   grid-template-areas:
     "settings log"
-    "notes wireless";
+    "settings wireless"
+    "notes notes";
   gap: 16px;
   padding: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .panel {
@@ -52,6 +54,8 @@ body {
 
 .panel-settings {
   grid-area: settings;
+  min-height: 0;
+  overflow: auto;
 }
 
 .panel-log {
@@ -74,6 +78,8 @@ body {
 
 .panel-notes {
   grid-area: notes;
+  max-height: 220px;
+  overflow: auto;
   background: var(--panel-alt);
 }
 
@@ -367,11 +373,18 @@ input:disabled {
 @media (max-width: 960px) {
   .layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
     grid-template-areas:
       "settings"
       "log"
       "wireless"
       "notes";
+  }
+
+  .panel-settings,
+  .panel-notes {
+    max-height: none;
+    overflow: visible;
   }
 
   .device-grid,
