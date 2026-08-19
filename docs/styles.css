@@ -34,10 +34,9 @@ body {
 .layout {
   display: grid;
   grid-template-columns: minmax(340px, 480px) minmax(360px, 1fr);
-  grid-template-rows: 520px 300px auto;
+  grid-template-rows: minmax(520px, auto) auto;
   grid-template-areas:
     "settings log"
-    "settings wireless"
     "notes notes";
   gap: 16px;
   padding: 16px;
@@ -62,18 +61,7 @@ body {
   display: flex;
   flex-direction: column;
   grid-area: log;
-  height: 520px;
   min-height: 520px;
-  max-height: 520px;
-}
-
-.panel-wireless {
-  display: flex;
-  flex-direction: column;
-  grid-area: wireless;
-  height: 300px;
-  min-height: 300px;
-  max-height: 300px;
 }
 
 .panel-notes {
@@ -81,6 +69,15 @@ body {
   max-height: 220px;
   overflow: auto;
   background: var(--panel-alt);
+}
+
+.warning-box {
+  padding: 12px;
+  border: 1px solid rgba(211, 169, 94, 0.45);
+  border-radius: 8px;
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .panel-header {
@@ -110,11 +107,6 @@ h1 {
 
 h2 {
   font-size: 18px;
-}
-
-.status-block {
-  display: flex;
-  align-items: center;
 }
 
 .badge,
@@ -150,7 +142,6 @@ h2 {
 
 .form-grid,
 .field-group,
-.field,
 .device-card {
   display: grid;
   gap: 10px;
@@ -167,12 +158,6 @@ h2 {
   padding: 0 8px;
   color: var(--muted);
   font-size: 13px;
-}
-
-.device-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px;
 }
 
 .device-card {
@@ -207,19 +192,6 @@ h2 {
   gap: 8px;
 }
 
-.field-row {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 12px;
-}
-
-.field span {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-select,
-input,
 button {
   width: 100%;
   border: 1px solid var(--border);
@@ -229,49 +201,13 @@ button {
   font: inherit;
 }
 
-select,
-input {
-  min-height: 40px;
-  padding: 0 12px;
-}
-
 button {
   min-height: 40px;
   padding: 0 14px;
   cursor: pointer;
 }
 
-.mode-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text);
-  font-size: 14px;
-}
-
-.mode-toggle input {
-  width: 18px;
-  min-height: 18px;
-  margin: 0;
-}
-
-.api-device-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 160px;
-  gap: 12px;
-  align-items: center;
-}
-
-.hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-button:disabled,
-select:disabled,
-input:disabled {
+button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -304,39 +240,6 @@ input:disabled {
   font-size: 13px;
 }
 
-.remove-button {
-  color: var(--warning);
-  font-size: 13px;
-}
-
-.command-row {
-  display: flex;
-  gap: 10px;
-}
-
-.wireless-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px;
-  gap: 12px;
-  align-items: end;
-}
-
-.wireless-status {
-  min-height: 20px;
-  margin: 8px 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.wireless-status.is-ok {
-  color: var(--success);
-}
-
-.wireless-status.is-ng {
-  color: var(--danger);
-}
-
 .log-output {
   flex: 1;
   min-height: 0;
@@ -352,11 +255,6 @@ input:disabled {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.wireless-log-output {
-  flex: 1;
-  min-height: 0;
 }
 
 .notes-list {
@@ -377,7 +275,6 @@ input:disabled {
     grid-template-areas:
       "settings"
       "log"
-      "wireless"
       "notes";
   }
 
@@ -385,12 +282,5 @@ input:disabled {
   .panel-notes {
     max-height: none;
     overflow: visible;
-  }
-
-  .device-grid,
-  .field-row,
-  .api-device-controls,
-  .wireless-controls {
-    grid-template-columns: 1fr;
   }
 }

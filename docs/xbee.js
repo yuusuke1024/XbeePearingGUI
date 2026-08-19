@@ -2,1158 +2,255 @@ const GUARD_TIME_MS = 1100;
 const ENTER_COMMAND_TIMEOUT_MS = 2500;
 const COMMAND_TIMEOUT_MS = 2500;
 const CLOSE_TIMEOUT_MS = 1000;
-const VALUE_SETTLE_TIMEOUT_MS = 80;
-const WIRELESS_TEST_TIMEOUT_MS = 3000;
-const WIRELESS_TEST_PAYLOAD_MAX_LENGTH = 80;
 
-const BAUD_RATE_ATBD_TABLE = {
-  1200: "0",
-  2400: "1",
-  4800: "2",
-  9600: "3",
-  19200: "4",
-  38400: "5",
-  57600: "6",
-  115200: "7"
-};
-
+/** XBee の現在の UART 設定で試す候補。XBee の設定値は変更しない。 */
 export const DEFAULT_BAUD_RATE_CANDIDATES = [9600, 38400, 115200, 57600, 19200, 4800, 2400, 1200];
 
-/**
- * @param {string} input
- * @returns {string}
- */
-export function normalizeWirelessTestPayload(input) {
-  const normalized = String(input ?? "").replace(/[\r\n]+/g, " ").trim();
-  if (!normalized) {
-    return "XBee wireless test";
-  }
-  return normalized.slice(0, WIRELESS_TEST_PAYLOAD_MAX_LENGTH);
-}
-
-/**
- * @param {string} direction
- * @param {string} payload
- * @returns {string}
- */
-export function buildWirelessTestFrame(direction, payload) {
-  const safeDirection = String(direction ?? "LINK").replace(/[^A-Z0-9_-]/gi, "").toUpperCase() || "LINK";
-  const suffix = Math.random().toString(16).slice(2, 8).toUpperCase();
-  return `[${safeDirection}:${Date.now().toString(36).toUpperCase()}:${suffix}] ${normalizeWirelessTestPayload(payload)}\n`;
-}
-
-/**
- * @param {number | number[]} preferred
- * @returns {number[]}
- */
+/** @param {number | number[]} preferred */
 export function buildBaudRateCandidates(preferred = []) {
-  const preferredList = Array.isArray(preferred) ? preferred : [preferred];
-  return uniqueSupportedBaudRates([...preferredList, ...DEFAULT_BAUD_RATE_CANDIDATES]);
+  const values = Array.isArray(preferred) ? preferred : [preferred];
+  const candidates = [];
+  for (const value of [...values, ...DEFAULT_BAUD_RATE_CANDIDATES]) {
+    const baudRate = Number(value);
+    if (Number.isInteger(baudRate) && baudRate > 0 && !candidates.includes(baudRate)) candidates.push(baudRate);
+  }
+  return candidates;
 }
 
-/**
- * @param {number[]} candidates
- * @returns {number[]}
- */
-function uniqueSupportedBaudRates(candidates) {
-  const seen = new Set();
-  const result = [];
-
-  for (const candidate of candidates) {
-    const baudRate = Number(candidate);
-    if (!BAUD_RATE_ATBD_TABLE[baudRate] || seen.has(baudRate)) {
-      continue;
-    }
-    seen.add(baudRate);
-    result.push(baudRate);
-  }
-
-  return result;
-}
-
-export function baudRateToAtbd(baudRate) {
-  const code = BAUD_RATE_ATBD_TABLE[baudRate];
-  if (!code) {
-    throw new Error(`未対応のボーレートです: ${baudRate}`);
-  }
-  return code;
-}
-
-/**
- * @param {string} value
- * @returns {string}
- */
-/**
- * @param {string[]} lines
- * @param {string} remainder
- * @returns {string}
- */
-function formatReceivedForError(lines, remainder) {
-  const parts = lines.map((line) => JSON.stringify(line));
-  if (remainder) {
-    parts.push(`remainder=${JSON.stringify(remainder)}`);
-  }
-  return parts.length > 0 ? parts.join(", ") : "(なし)";
-}
-
-export function sanitizeHex32(value) {
-  const normalized = String(value ?? "").trim().toUpperCase().replace(/^0X/, "");
-  if (!/^[0-9A-F]{1,8}$/.test(normalized)) {
-    throw new Error("SL/DL に使用する値は 1〜8 桁の16進数で指定してください。");
-  }
-  return normalized.padStart(8, "0");
-}
-
-/**
- * @param {string} input
- * @returns {string}
- */
-export function normalizePanId(input) {
-  const normalized = String(input ?? "").trim().toUpperCase().replace(/^0X/, "");
-  if (!/^[0-9A-F]{1,16}$/.test(normalized)) {
-    throw new Error("PAN ID は 1〜16 桁の16進数で入力してください。0x 接頭辞は省略可能です。");
-  }
-  return normalized;
-}
-
-/**
- * @param {number} index
- * @returns {string}
- */
-function deviceIndexToName(index) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  if (index >= 0 && index < alphabet.length) {
-    return `XBee ${alphabet[index]}`;
-  }
-  return `XBee ${index + 1}`;
-}
-
-/**
- * @param {{ panId: string, coordinator: "A"|"B", baudRate: number }} options
- * @returns {{
- *   normalizedPanId: string,
- *   roles: { A: "1"|"0", B: "1"|"0" },
- *   baudRate: number,
- *   commandsForA: string[],
- *   commandsForB: string[]
- * }}
- */
-export function buildPairingPlan({ panId, coordinator, baudRate }) {
-  const normalizedPanId = normalizePanId(panId);
-  if (coordinator !== "A" && coordinator !== "B") {
-    throw new Error("Coordinator は A または B を指定してください。");
-  }
-
-  const bdCode = baudRateToAtbd(baudRate);
-  const roles = coordinator === "A" ? { A: "1", B: "0" } : { A: "0", B: "1" };
-
-  return {
-    normalizedPanId,
-    roles,
-    baudRate,
-    commandsForA: [`ATID${normalizedPanId}\r`, `ATCE${roles.A}\r`, `ATBD${bdCode}\r`],
-    commandsForB: [`ATID${normalizedPanId}\r`, `ATCE${roles.B}\r`, `ATBD${bdCode}\r`]
-  };
-}
-
-/**
- * @param {{ panId: string, coordinatorIndex: number, baudRate: number, deviceCount: number }} options
- * @returns {{
- *   normalizedPanId: string,
- *   roles: ("1"|"0")[],
- *   baudRate: number,
- *   apiMode: "1",
- *   commandsForDevices: string[][]
- * }}
- */
-export function buildApiNetworkPlan({ panId, coordinatorIndex, baudRate, deviceCount }) {
-  const normalizedPanId = normalizePanId(panId);
-  const count = Number(deviceCount);
-  const coordinator = Number(coordinatorIndex);
-
-  if (!Number.isInteger(count) || count < 3) {
-    throw new Error("API モードでは 3 台以上の XBee を指定してください。");
-  }
-  if (!Number.isInteger(coordinator) || coordinator < 0 || coordinator >= count) {
-    throw new Error("Coordinator の選択が不正です。");
-  }
-
-  const bdCode = baudRateToAtbd(baudRate);
-  const roles = Array.from({ length: count }, (_, index) => (index === coordinator ? "1" : "0"));
-
-  return {
-    normalizedPanId,
-    roles,
-    baudRate,
-    apiMode: "1",
-    commandsForDevices: roles.map((role) => [
-      `ATID${normalizedPanId}\r`,
-      `ATCE${role}\r`,
-      `ATBD${bdCode}\r`,
-      "ATAP1\r"
-    ])
-  };
-}
-
-/**
- * @param {string} buffer
- * @returns {{ lines: string[], remainder: string }}
- */
+/** @param {string} buffer */
 export function extractCompleteLines(buffer) {
-  const normalized = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const trailingNewline = normalized.endsWith("\n");
+  const normalized = String(buffer).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const complete = normalized.endsWith("\n");
   const parts = normalized.split("\n");
-  const remainder = trailingNewline ? "" : parts.pop() ?? "";
-  const lines = parts.map((line) => line.trim()).filter(Boolean);
-  return { lines, remainder };
+  const remainder = complete ? "" : (parts.pop() ?? "");
+  return { lines: parts.map((line) => line.trim()).filter(Boolean), remainder };
 }
 
-/**
- * @param {{ lines: string[], remainder: string }} state
- * @param {string} chunkText
- * @returns {{ lines: string[], remainder: string }}
- */
+/** @param {{lines: string[], remainder: string}} state @param {string} chunkText */
 export function appendResponseChunk(state, chunkText) {
   const next = extractCompleteLines(`${state.remainder}${chunkText}`);
-  return {
-    lines: [...state.lines, ...next.lines],
-    remainder: next.remainder
-  };
+  return { lines: [...state.lines, ...next.lines], remainder: next.remainder };
 }
 
-/**
- * @param {string[]} lines
- * @returns {{ hasOk: boolean, valueLine: string | null }}
- */
+/** @param {string[]} lines */
 export function analyzeResponseLines(lines) {
-  const hasOk = lines.some((line) => /^OK$/i.test(line));
-  const valueLine = lines.find((line) => !/^OK$/i.test(line)) ?? null;
-  return { hasOk, valueLine };
+  return { hasOk: lines.some((line) => /^OK$/i.test(line)), valueLine: lines.find((line) => !/^OK$/i.test(line)) ?? null };
 }
 
-/**
- * @param {string[]} lines
- * @param {string} remainder
- * @returns {{ hasOk: boolean, valueLine: string | null, valueFromRemainder: boolean }}
- */
-export function analyzeResponseState(lines, remainder) {
-  const analysis = analyzeResponseLines(lines);
-  const trimmedRemainder = remainder.trim();
-  const remainderIsOk = trimmedRemainder !== "" && /^OK$/i.test(trimmedRemainder);
-
-  if (analysis.valueLine) {
-    return { hasOk: analysis.hasOk || remainderIsOk, valueLine: analysis.valueLine, valueFromRemainder: false };
-  }
-  if (remainderIsOk) {
-    return { hasOk: true, valueLine: null, valueFromRemainder: false };
-  }
-  if (trimmedRemainder) {
-    return { hasOk: analysis.hasOk, valueLine: trimmedRemainder, valueFromRemainder: true };
-  }
-  return { hasOk: analysis.hasOk, valueLine: null, valueFromRemainder: false };
+/** @param {{lines: string[], remainder: string}} state */
+function analyzeResponseState(state) {
+  const analysis = analyzeResponseLines(state.lines);
+  const remainder = state.remainder.trim();
+  if (/^OK$/i.test(remainder)) return { ...analysis, hasOk: true };
+  if (!analysis.valueLine && remainder) return { ...analysis, valueLine: remainder };
+  return analysis;
 }
 
-/**
- * @param {number} ms
- * @returns {Promise<void>}
- */
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function formatError(error) { return error instanceof Error ? error.message : String(error); }
+function ensureNotAborted(signal) {
+  if (signal?.aborted) throw new Error("処理がキャンセルされました。");
 }
 
-/**
- * @param {number} deadline
- * @param {number | null} settleDeadline
- * @returns {number}
- */
-function computeWaitMs(deadline, settleDeadline) {
-  const now = Date.now();
-  const candidates = [deadline - now];
-  if (settleDeadline !== null) {
-    candidates.push(settleDeadline - now);
-  }
-  return Math.max(0, Math.min(...candidates));
-}
-
+/** Web Serial の1ポートを XBee AT コマンドモードで扱うセッション。 */
 export class XBeeSerialSession {
-  /**
-   * @param {SerialPort} port
-   * @param {{
-   *   baudRate: number,
-   *   name: string,
-   *   logger?: (message: string) => void,
-   *   commandTimeoutMs?: number,
-   *   enterCommandTimeoutMs?: number,
-   *   closeTimeoutMs?: number,
-   *   valueSettleTimeoutMs?: number
-   * }} options
-   */
+  /** @param {SerialPort} port @param {any} options */
   constructor(port, options) {
     this.port = port;
     this.baudRate = options.baudRate;
-    this.name = options.name;
+    this.name = options.name ?? "XBee";
     this.logger = options.logger ?? (() => {});
-    this.reader = null;
-    this.writer = null;
-    this.decoder = new TextDecoder();
-    this.encoder = new TextEncoder();
-    this.buffer = "";
-    this.responseLines = [];
-    this.responseRemainder = "";
-    this.waiters = [];
-    this.isOpen = false;
-    this.readLoopPromise = null;
-    this.readLoopError = null;
-    this.needsInputFlush = false;
-    this.inputSequence = 0;
-    this.lastSeenSequence = 0;
     this.commandTimeoutMs = options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS;
     this.enterCommandTimeoutMs = options.enterCommandTimeoutMs ?? ENTER_COMMAND_TIMEOUT_MS;
     this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
-    this.valueSettleTimeoutMs = options.valueSettleTimeoutMs ?? VALUE_SETTLE_TIMEOUT_MS;
-  }
-
-  async open() {
-    if (this.isOpen) {
-      return;
-    }
-
-    await this.port.open({
-      baudRate: this.baudRate,
-      dataBits: 8,
-      stopBits: 1,
-      parity: "none",
-      flowControl: "none"
-    });
-
-    this.reader = this.port.readable?.getReader() ?? null;
-    this.writer = this.port.writable?.getWriter() ?? null;
-
-    if (!this.reader || !this.writer) {
-      throw new Error(`${this.name}: シリアルストリームを取得できませんでした。`);
-    }
-
-    this.isOpen = true;
-    this.readLoopError = null;
-    this.readLoopPromise = this.readLoop();
-    this.log(`ポートを開きました (baud=${this.baudRate})`);
-  }
-
-  async close() {
-    const tasks = [];
-
-    if (this.reader) {
-      tasks.push(
-        Promise.race([
-          this.reader.cancel().catch(() => {}),
-          delay(this.closeTimeoutMs)
-        ]).then(async () => {
-          if (this.readLoopPromise) {
-            await Promise.race([
-              this.readLoopPromise.catch(() => {}),
-              delay(this.closeTimeoutMs)
-            ]);
-          }
-          this.reader?.releaseLock();
-          this.reader = null;
-        })
-      );
-    }
-
-    if (this.writer) {
-      tasks.push(
-        Promise.resolve().then(() => {
-          this.writer?.releaseLock();
-          this.writer = null;
-        })
-      );
-    }
-
-    await Promise.all(tasks);
-
-    if (this.isOpen) {
-      await this.port.close().catch(() => {});
-      this.log("ポートを閉じました");
-    }
-
+    this.guardTimeMs = options.guardTimeMs ?? GUARD_TIME_MS;
+    this.reader = null;
+    this.writer = null;
     this.isOpen = false;
-    this.buffer = "";
+    this.decoder = new TextDecoder();
+    this.encoder = new TextEncoder();
     this.responseLines = [];
     this.responseRemainder = "";
+    this.inputSequence = 0;
+    this.lastSeenSequence = 0;
     this.waiters = [];
     this.readLoopPromise = null;
     this.readLoopError = null;
-    this.needsInputFlush = false;
-    this.inputSequence = 0;
-    this.lastSeenSequence = 0;
+    this.closing = false;
+  }
+
+  async open() {
+    if (this.isOpen) return;
+    try {
+      await this.port.open({ baudRate: this.baudRate, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" });
+    } catch (error) {
+      const wrapped = new Error(`${this.name}: シリアルポートを開けませんでした: ${formatError(error)}`);
+      wrapped.code = "PORT_OPEN_FAILED";
+      throw wrapped;
+    }
+    this.isOpen = true;
+    try {
+      this.reader = this.port.readable?.getReader() ?? null;
+      this.writer = this.port.writable?.getWriter() ?? null;
+      if (!this.reader || !this.writer) throw new Error("シリアルストリームを取得できませんでした。");
+      this.readLoopError = null;
+      this.readLoopPromise = this.readLoop();
+    } catch (error) {
+      await this.close();
+      const wrapped = new Error(`${this.name}: シリアルポート／ストリームを取得できませんでした: ${formatError(error)}`);
+      wrapped.code = "PORT_STREAM_FAILED";
+      throw wrapped;
+    }
+  }
+
+  async close() {
+    this.closing = true;
+    const reader = this.reader;
+    this.reader = null;
+    this.writer?.releaseLock?.();
+    this.writer = null;
+    if (reader) {
+      await Promise.race([Promise.resolve(reader.cancel()).catch(() => {}), delay(this.closeTimeoutMs)]);
+      reader.releaseLock?.();
+    }
+    if (this.isOpen) await this.port.close().catch(() => {});
+    this.isOpen = false;
+    this.responseLines = [];
+    this.responseRemainder = "";
+    this.waiters.splice(0).forEach((resolve) => resolve(false));
+    this.readLoopPromise = null;
+    this.readLoopError = null;
+    this.closing = false;
   }
 
   async enterCommandMode() {
     this.ensureReady();
-    this.log("コマンドモードへ移行します");
-    await delay(GUARD_TIME_MS);
+    await delay(this.guardTimeMs);
     this.clearResponseBuffer();
-    this.log(`送信: ${JSON.stringify("+++")}`);
     await this.writeRaw("+++");
-    await delay(GUARD_TIME_MS);
+    await delay(this.guardTimeMs);
     await this.expectOk(this.enterCommandTimeoutMs, "コマンドモード移行");
   }
 
-  /**
-   * @returns {Promise<string>}
-   */
-  async readSerialLow() {
+  /** @param {string} command @param {string} label */
+  async sendOkCommand(command, label = command.trim()) {
     this.ensureReady();
-    this.log("ATSL を送信します");
-    const response = await this.sendCommand("ATSL\r", { expectValue: true, label: "ATSL" });
-    return sanitizeHex32(response);
-  }
-
-  /**
-   * @param {string} command
-   * @param {string} label
-   */
-  async sendOkCommand(command, label) {
-    this.ensureReady();
-    await this.sendCommand(command, { expectValue: false, label });
-  }
-
-  /**
-   * @param {string} command
-   * @param {{ expectValue: boolean, label: string }} options
-   * @returns {Promise<string>}
-   */
-  async sendCommand(command, options) {
-    this.ensureReady();
-    this.log(`${options.label} を送信します: ${JSON.stringify(command)}`);
-    await this.flushStaleInputIfNeeded();
     this.clearResponseBuffer();
     await this.writeRaw(command);
-    const lines = await this.readResponse(options.label, this.commandTimeoutMs, {
-      acceptValue: options.expectValue
-    });
-    const analysis = analyzeResponseLines(lines);
-
-    if (options.expectValue) {
-      if (!analysis.valueLine) {
-        const received = formatReceivedForError(lines, this.responseRemainder);
-        throw new Error(`${this.name}: ${options.label} の応答値を受信できませんでした。受信内容=[${received}]`);
-      }
-      this.log(`${options.label} 応答値: ${analysis.valueLine}`);
-      return analysis.valueLine;
-    }
-
-    if (!analysis.hasOk) {
-      const received = formatReceivedForError(lines, this.responseRemainder);
-      throw new Error(`${this.name}: ${options.label} の応答が OK ではありませんでした。受信内容=[${received}]`);
-    }
-
-    this.log(`${options.label} OK`);
-    return "OK";
+    await this.expectOk(this.commandTimeoutMs, label);
   }
 
-  /**
-   * @param {string} command
-   */
   async writeRaw(command) {
-    if (!this.writer) {
-      throw new Error(`${this.name}: writer が利用できません。`);
-    }
+    this.ensureReady();
     await this.writer.write(this.encoder.encode(command));
   }
 
-  /**
-   * @param {number} timeoutMs
-   * @param {string} context
-   */
   async expectOk(timeoutMs, context) {
-    const lines = await this.readResponse(context, timeoutMs, { acceptValue: false });
-    const analysis = analyzeResponseLines(lines);
-    if (!analysis.hasOk) {
-      const received = formatReceivedForError(lines, this.responseRemainder);
-      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。受信内容=[${received}]`);
-    }
-    this.log(`${context}: OK`);
-  }
-
-  /**
-   * @param {string} context
-   * @param {number} timeoutMs
-   * @param {{ acceptValue: boolean }} options
-   * @returns {Promise<string[]>}
-   */
-  async readResponse(context, timeoutMs, options) {
-    if (!this.reader) {
-      throw new Error(`${this.name}: reader が利用できません。`);
-    }
-
     const deadline = Date.now() + timeoutMs;
-    let settleDeadline = null;
-
     while (Date.now() < deadline) {
-      const waitMs = computeWaitMs(deadline, settleDeadline);
-      const state = analyzeResponseState(this.responseLines, this.responseRemainder);
-
+      const state = analyzeResponseState({ lines: this.responseLines, remainder: this.responseRemainder });
       if (state.hasOk) {
-        if (this.responseRemainder.trim()) {
-          this.promoteRemainderToLine();
-        }
-        const lines = this.consumeResponseLines();
-        this.needsInputFlush = false;
-        return lines;
+        this.clearResponseBuffer();
+        return;
       }
-
-      if (options.acceptValue && state.valueLine && !state.valueFromRemainder && settleDeadline === null) {
-        settleDeadline = Date.now() + this.valueSettleTimeoutMs;
-      }
-
-      if (options.acceptValue && state.valueLine && settleDeadline !== null && Date.now() >= settleDeadline) {
-        const lines = this.consumeResponseLines();
-        this.needsInputFlush = true;
-        return lines;
-      }
-
-      const didReceive = await this.waitForInput(waitMs);
-      if (!didReceive) {
-        const latest = analyzeResponseState(this.responseLines, this.responseRemainder);
-        if (options.acceptValue && latest.valueLine) {
-          if (latest.valueFromRemainder) {
-            this.promoteRemainderToLine();
-          }
-          const lines = this.consumeResponseLines();
-          this.needsInputFlush = !latest.hasOk;
-          return lines;
-        }
-      }
+      if (this.readLoopError) throw this.readLoopError;
+      await this.waitForInput(Math.max(0, deadline - Date.now()));
     }
-
-    const finalState = analyzeResponseState(this.responseLines, this.responseRemainder);
-    if (options.acceptValue && finalState.valueLine) {
-      if (finalState.valueFromRemainder) {
-        this.promoteRemainderToLine();
-      }
-      const lines = this.consumeResponseLines();
-      this.needsInputFlush = !finalState.hasOk;
-      return lines;
-    }
-
-    if (!options.acceptValue && finalState.valueLine) {
-      const received = formatReceivedForError(this.responseLines, this.responseRemainder);
-      this.clearResponseBuffer();
-      throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。受信内容=[${received}]`);
-    }
-    const received = formatReceivedForError(this.responseLines, this.responseRemainder);
-    throw new Error(`${this.name}: ${context} の応答待ちがタイムアウトしました。受信内容=[${received}]`);
+    const received = [...this.responseLines, this.responseRemainder].filter(Boolean).join(", ");
+    throw new Error(`${this.name}: ${context} の応答が OK ではありませんでした。${received ? `受信内容=[${received}]` : "タイムアウト"}`);
   }
 
   async readLoop() {
-    if (!this.reader) {
-      return;
-    }
-
     try {
       while (this.reader) {
         const { value, done } = await this.reader.read();
         if (done) {
+          if (!this.closing) {
+            this.readLoopError = new Error(`${this.name}: シリアルポートが切断されました。`);
+            this.log(this.readLoopError.message);
+            this.waiters.splice(0).forEach((resolve) => resolve(false));
+          }
           break;
         }
         if (value) {
-          const next = appendResponseChunk(
-            { lines: this.responseLines, remainder: this.responseRemainder },
-            this.decoder.decode(value, { stream: true })
-          );
+          const next = appendResponseChunk({ lines: this.responseLines, remainder: this.responseRemainder }, this.decoder.decode(value, { stream: true }));
           this.responseLines = next.lines;
           this.responseRemainder = next.remainder;
           this.inputSequence += 1;
-          this.notifyInputWaiters();
+          this.waiters.splice(0).forEach((resolve) => resolve(true));
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      this.log(`シリアル読み取りでエラーが発生しました: ${message}`);
       this.readLoopError = error;
-      this.notifyInputWaiters();
+      this.waiters.splice(0).forEach((resolve) => resolve(false));
     }
   }
 
-  /**
-   * @param {number} timeoutMs
-   * @returns {Promise<boolean>}
-   */
   waitForInput(timeoutMs) {
-    if (this.readLoopError) {
-      throw this.readLoopError;
-    }
-
     if (this.inputSequence !== this.lastSeenSequence) {
       this.lastSeenSequence = this.inputSequence;
       return Promise.resolve(true);
     }
-
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.waiters = this.waiters.filter((waiter) => waiter !== resolveInput);
+    return new Promise((resolve) => {
+      const finish = (value) => { clearTimeout(timer); resolve(value); };
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((item) => item !== finish);
         resolve(false);
       }, timeoutMs);
-
-      const resolveInput = () => {
-        clearTimeout(timeoutId);
-        if (this.readLoopError) {
-          reject(this.readLoopError);
-          return;
-        }
-        resolve(true);
-      };
-
-      this.waiters.push(resolveInput);
-    });
+      this.waiters.push(finish);
+    }).then((value) => { this.lastSeenSequence = this.inputSequence; return value; });
   }
 
-  notifyInputWaiters() {
-    const waiters = this.waiters.splice(0, this.waiters.length);
-    for (const waiter of waiters) {
-      waiter();
-    }
-  }
-
-  async flushStaleInputIfNeeded() {
-    if (!this.needsInputFlush) {
-      return;
-    }
-
-    this.clearResponseBuffer();
-    const staleFlushTimeoutMs = Math.max(this.valueSettleTimeoutMs, this.commandTimeoutMs);
-    while (true) {
-      const didReceive = await this.waitForInput(staleFlushTimeoutMs);
-      if (!didReceive) {
-        this.needsInputFlush = false;
-        return;
-      }
-      this.clearResponseBuffer();
-    }
-  }
-
-  clearResponseBuffer() {
-    this.responseLines = [];
-    this.responseRemainder = "";
-    this.lastSeenSequence = this.inputSequence;
-  }
-
-  consumeResponseLines() {
-    const lines = this.responseLines;
-    this.clearResponseBuffer();
-    return lines;
-  }
-
-  promoteRemainderToLine() {
-    const trimmed = this.responseRemainder.trim();
-    if (trimmed) {
-      this.responseLines.push(trimmed);
-      this.responseRemainder = "";
-    }
-  }
-
-  ensureReady() {
-    if (!this.isOpen || !this.reader || !this.writer) {
-      throw new Error(`${this.name}: ポートが開かれていません。`);
-    }
-  }
-
-  /**
-   * @param {string} message
-   */
-  log(message) {
-    this.logger(`[${this.name}] ${message}`);
-  }
+  clearResponseBuffer() { this.responseLines = []; this.responseRemainder = ""; this.lastSeenSequence = this.inputSequence; }
+  ensureReady() { if (!this.isOpen || !this.reader || !this.writer) throw new Error(`${this.name}: ポートが開かれていません。`); }
+  log(message) { this.logger(`[${this.name}] ${message}`); }
 }
 
-class TransparentSerialSession {
-  /**
-   * @param {SerialPort} port
-   * @param {{
-   *   baudRate: number,
-   *   name: string,
-   *   logger?: (message: string) => void,
-   *   closeTimeoutMs?: number
-   * }} options
-   */
-  constructor(port, options) {
-    this.port = port;
-    this.baudRate = options.baudRate;
-    this.name = options.name;
-    this.logger = options.logger ?? (() => {});
-    this.closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
-    this.reader = null;
-    this.writer = null;
-    this.decoder = new TextDecoder();
-    this.encoder = new TextEncoder();
-    this.receivedText = "";
-    this.waiters = [];
-    this.inputSequence = 0;
-    this.lastSeenSequence = 0;
-    this.isOpen = false;
-    this.readLoopPromise = null;
-    this.readLoopError = null;
-  }
-
-  async open() {
-    if (this.isOpen) {
-      return;
-    }
-
-    await this.port.open({
-      baudRate: this.baudRate,
-      dataBits: 8,
-      stopBits: 1,
-      parity: "none",
-      flowControl: "none"
-    });
-
-    this.isOpen = true;
-    this.reader = this.port.readable?.getReader() ?? null;
-    this.writer = this.port.writable?.getWriter() ?? null;
-
-    if (!this.reader || !this.writer) {
-      throw new Error(`${this.name}: 透過モード用のシリアルストリームを取得できませんでした。`);
-    }
-
-    this.readLoopError = null;
-    this.readLoopPromise = this.readLoop();
-    this.log(`透過モードでポートを開きました (baud=${this.baudRate})`);
-  }
-
-  async close() {
-    const tasks = [];
-
-    if (this.reader) {
-      tasks.push(
-        Promise.race([
-          this.reader.cancel().catch(() => {}),
-          delay(this.closeTimeoutMs)
-        ]).then(async () => {
-          if (this.readLoopPromise) {
-            await Promise.race([
-              this.readLoopPromise.catch(() => {}),
-              delay(this.closeTimeoutMs)
-            ]);
-          }
-          this.reader?.releaseLock();
-          this.reader = null;
-        })
-      );
-    }
-
-    if (this.writer) {
-      tasks.push(
-        Promise.resolve().then(() => {
-          this.writer?.releaseLock();
-          this.writer = null;
-        })
-      );
-    }
-
-    await Promise.all(tasks);
-
-    if (this.isOpen) {
-      await this.port.close().catch(() => {});
-      this.log("透過モードのポートを閉じました");
-    }
-
-    this.isOpen = false;
-    this.receivedText = "";
-    this.waiters = [];
-    this.inputSequence = 0;
-    this.lastSeenSequence = 0;
-    this.readLoopPromise = null;
-    this.readLoopError = null;
-  }
-
-  clearInput() {
-    this.receivedText = "";
-    this.lastSeenSequence = this.inputSequence;
-  }
-
-  /**
-   * @param {string} text
-   */
-  async writeText(text) {
-    if (!this.writer) {
-      throw new Error(`${this.name}: writer が利用できません。`);
-    }
-    await this.writer.write(this.encoder.encode(text));
-    this.log(`送信: ${JSON.stringify(text.trimEnd())}`);
-  }
-
-  /**
-   * @param {string} expected
-   * @param {number} timeoutMs
-   * @returns {Promise<string>}
-   */
-  async waitForText(expected, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      if (this.receivedText.includes(expected)) {
-        return this.receivedText;
-      }
-
-      const didReceive = await this.waitForInput(Math.max(0, deadline - Date.now()));
-      if (!didReceive && this.receivedText.includes(expected)) {
-        return this.receivedText;
-      }
-    }
-
-    throw new Error(`${this.name}: ${timeoutMs} ms以内に期待データを受信できませんでした。受信内容=${JSON.stringify(this.receivedText)}`);
-  }
-
-  async readLoop() {
-    if (!this.reader) {
-      return;
-    }
-
-    try {
-      while (this.reader) {
-        const { value, done } = await this.reader.read();
-        if (done) {
-          break;
-        }
-        if (value) {
-          this.receivedText += this.decoder.decode(value, { stream: true });
-          this.inputSequence += 1;
-          this.notifyInputWaiters();
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      this.log(`透過モードの読み取りでエラーが発生しました: ${message}`);
-      this.readLoopError = error;
-      this.notifyInputWaiters();
-    }
-  }
-
-  /**
-   * @param {number} timeoutMs
-   * @returns {Promise<boolean>}
-   */
-  waitForInput(timeoutMs) {
-    if (this.readLoopError) {
-      throw this.readLoopError;
-    }
-
-    if (this.inputSequence !== this.lastSeenSequence) {
-      this.lastSeenSequence = this.inputSequence;
-      return Promise.resolve(true);
-    }
-
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.waiters = this.waiters.filter((waiter) => waiter !== resolveInput);
-        resolve(false);
-      }, timeoutMs);
-
-      const resolveInput = () => {
-        clearTimeout(timeoutId);
-        if (this.readLoopError) {
-          reject(this.readLoopError);
-          return;
-        }
-        resolve(true);
-      };
-
-      this.waiters.push(resolveInput);
-    });
-  }
-
-  notifyInputWaiters() {
-    const waiters = this.waiters.splice(0, this.waiters.length);
-    for (const waiter of waiters) {
-      waiter();
-    }
-  }
-
-  /**
-   * @param {string} message
-   */
-  log(message) {
-    this.logger(`[${this.name}] ${message}`);
-  }
-}
-
-/**
- * @param {{
- *   portA: SerialPort,
- *   portB: SerialPort,
- *   baudRate: number,
- *   payload?: string,
- *   timeoutMs?: number,
- *   logger?: (message: string) => void
- * }} options
- */
-export async function verifyTransparentWirelessLink(options) {
-  const logger = options.logger ?? (() => {});
-  const timeoutMs = options.timeoutMs ?? WIRELESS_TEST_TIMEOUT_MS;
-  const sessionA = new TransparentSerialSession(options.portA, {
-    baudRate: options.baudRate,
-    name: "XBee A",
-    logger
-  });
-  const sessionB = new TransparentSerialSession(options.portB, {
-    baudRate: options.baudRate,
-    name: "XBee B",
-    logger
-  });
-  const frames = [
-    { label: "A→B", sender: sessionA, receiver: sessionB, frame: buildWirelessTestFrame("A2B", options.payload ?? "") },
-    { label: "B→A", sender: sessionB, receiver: sessionA, frame: buildWirelessTestFrame("B2A", options.payload ?? "") }
-  ];
-  const results = [];
-
-  try {
-    logger(`[START] 無線通信テストを開始します (baud=${options.baudRate}, timeout=${timeoutMs} ms)`);
-    await Promise.all([sessionA.open(), sessionB.open()]);
-
-    for (const item of frames) {
-      item.receiver.clearInput();
-      logger(`[${item.label}] 送信待ちデータ=${JSON.stringify(item.frame.trimEnd())}`);
-      await item.sender.writeText(item.frame);
-      const receivedText = await item.receiver.waitForText(item.frame, timeoutMs);
-      logger(`[OK] ${item.label} で期待データを受信しました`);
-      results.push({
-        direction: item.label,
-        sent: item.frame,
-        received: receivedText,
-        ok: true
-      });
-    }
-
-    logger("[DONE] A→B / B→A の無線送受信を確認しました");
-    return {
-      ok: true,
-      baudRate: options.baudRate,
-      payload: normalizeWirelessTestPayload(options.payload ?? ""),
-      results
-    };
-  } finally {
-    await Promise.allSettled([sessionA.close(), sessionB.close()]);
-  }
-}
-
-/**
- * @param {{
- *   portA: SerialPort,
- *   portB: SerialPort,
- *   baudRate: number,
- *   panId: string,
- *   coordinator: "A"|"B",
- *   logger?: (message: string) => void
- * }} options
- */
-export async function pairXBees(options) {
-  const logger = options.logger ?? (() => {});
-  const plan = buildPairingPlan({
-    panId: options.panId,
-    coordinator: options.coordinator,
-    baudRate: options.baudRate
-  });
-  const baudRateCandidates = buildBaudRateCandidates(options.baudRate);
-
-  let sessionA = null;
-  let sessionB = null;
-
-  try {
-    logger(`[SCAN] UART ボーレート候補: ${baudRateCandidates.join(", ")} bps`);
-    sessionA = await openCommandModeSession(options.portA, {
-      name: "XBee A",
-      candidates: baudRateCandidates,
-      logger
-    });
-    sessionB = await openCommandModeSession(options.portB, {
-      name: "XBee B",
-      candidates: baudRateCandidates,
-      logger
-    });
-    logger(`[SCAN] XBee A=${sessionA.baudRate} bps / XBee B=${sessionB.baudRate} bps で設定通信します`);
-
-    const slA = await sessionA.readSerialLow();
-    const slB = await sessionB.readSerialLow();
-
-    logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.coordinator} / 通信ボーレート=${options.baudRate} bps`);
-    logger(`[PLAN] XBee A の SL=${slA} を XBee B の DL に設定します`);
-    logger(`[PLAN] XBee B の SL=${slB} を XBee A の DL に設定します`);
-
-    for (const command of plan.commandsForA) {
-      await sessionA.sendOkCommand(command, command.trim());
-    }
-    for (const command of plan.commandsForB) {
-      await sessionB.sendOkCommand(command, command.trim());
-    }
-
-    await sessionA.sendOkCommand(`ATDL${slB}\r`, `ATDL${slB}`);
-    await sessionB.sendOkCommand(`ATDL${slA}\r`, `ATDL${slA}`);
-
-    await sessionA.sendOkCommand("ATWR\r", "ATWR");
-    await sessionB.sendOkCommand("ATWR\r", "ATWR");
-
-    await sessionA.sendOkCommand("ATCN\r", "ATCN");
-    await sessionB.sendOkCommand("ATCN\r", "ATCN");
-
-    logger("[DONE] ペアリング設定の書き込みが完了しました");
-    logger(`[NOTE] XBee 同士の通信ボーレートを ${options.baudRate} bps に設定しました。変更を有効にするため、両方の XBee を再起動（電源 OFF/ON）してください`);
-    return {
-      normalizedPanId: plan.normalizedPanId,
-      slA,
-      slB,
-      roles: plan.roles,
-      baudRate: options.baudRate
-    };
-  } finally {
-    await Promise.allSettled([sessionA?.close(), sessionB?.close()]);
-  }
-}
-
-/**
- * @param {SerialPort} port
- * @param {{
- *   name: string,
- *   candidates?: number[],
- *   logger?: (message: string) => void
- *   commandTimeoutMs?: number,
- *   enterCommandTimeoutMs?: number,
- *   closeTimeoutMs?: number,
- *   valueSettleTimeoutMs?: number
- * }} options
- * @returns {Promise<XBeeSerialSession>}
- */
+/** 候補ボーレートを順に試し、+++ に応答した開いたセッションを返す。 */
 export async function openCommandModeSession(port, options) {
-  const candidates = options.candidates ? uniqueSupportedBaudRates(options.candidates) : DEFAULT_BAUD_RATE_CANDIDATES;
+  const candidates = buildBaudRateCandidates(options.candidates ?? []);
   const logger = options.logger ?? (() => {});
-
   for (const baudRate of candidates) {
-    let enteredCommandMode = false;
-    const session = new XBeeSerialSession(port, {
-      baudRate,
-      name: options.name,
-      logger,
-      commandTimeoutMs: options.commandTimeoutMs ?? COMMAND_TIMEOUT_MS,
-      enterCommandTimeoutMs: options.enterCommandTimeoutMs ?? 1000,
-      closeTimeoutMs: options.closeTimeoutMs ?? 500,
-      valueSettleTimeoutMs: options.valueSettleTimeoutMs ?? 50
-    });
-
+    ensureNotAborted(options.signal);
+    const session = new XBeeSerialSession(port, { ...options, baudRate, logger });
     try {
-      logger(`[${options.name}] ${baudRate} bps でコマンドモードを確認します`);
+      logger(`[SCAN] ${options.name ?? "XBee"}: ${baudRate} bps で +++ を確認します`);
       await session.open();
       await session.enterCommandMode();
-      logger(`[${options.name}] ${baudRate} bps でコマンドモードに入りました`);
-      enteredCommandMode = true;
+      logger(`[OK] ${options.name ?? "XBee"}: ${baudRate} bps でコマンドモードを検出しました`);
       return session;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger(`[${options.name}] ${baudRate} bps では応答しませんでした: ${message}`);
-      // このボーレートではコマンドモードに入れなかった
-    } finally {
-      if (!enteredCommandMode) {
-        await session.close().catch(() => {});
-      }
+      if (error?.code === "PORT_OPEN_FAILED" || error?.code === "PORT_STREAM_FAILED") throw error;
+      logger(`[SCAN] ${options.name ?? "XBee"}: ${baudRate} bps は失敗: ${formatError(error)}`);
+      await session.close().catch(() => {});
     }
   }
-
-  throw new Error(`${options.name}: ${candidates.join(", ")} bps のいずれでもコマンドモードに入れませんでした。XBee の電源、配線、AT/API モード設定を確認してください。`);
+  throw new Error(`${options.name ?? "XBee"}: UART ボーレートを検出できないか、AT コマンドモードに入れませんでした。電源・USB接続・現在のATモードを確認してください。`);
 }
 
-/**
- * @param {{
- *   ports: SerialPort[],
- *   baudRate: number,
- *   panId: string,
- *   coordinatorIndex: number,
- *   names?: string[],
- *   commandTimeoutMs?: number,
- *   enterCommandTimeoutMs?: number,
- *   closeTimeoutMs?: number,
- *   valueSettleTimeoutMs?: number,
- *   logger?: (message: string) => void
- * }} options
- */
-export async function configureApiNetwork(options) {
+/** 1台を独立して AP=1 にする。 */
+export async function enableApiMode(options) {
+  if (!options?.port) throw new Error("設定対象の XBee ポートが選択されていません。");
   const logger = options.logger ?? (() => {});
-  const plan = buildApiNetworkPlan({
-    panId: options.panId,
-    coordinatorIndex: options.coordinatorIndex,
-    baudRate: options.baudRate,
-    deviceCount: options.ports.length
-  });
-  const baudRateCandidates = buildBaudRateCandidates(options.baudRate);
-  /** @type {(string | null)[]} */
-  const serialLows = Array.from({ length: options.ports.length }, () => null);
-
-  logger(`[SCAN] API モード設定対象: ${options.ports.length} 台`);
-  logger(`[SCAN] UART ボーレート候補: ${baudRateCandidates.join(", ")} bps`);
-  logger(`[PLAN] PAN ID=${plan.normalizedPanId} / Coordinator=${options.names?.[options.coordinatorIndex] ?? deviceIndexToName(options.coordinatorIndex)} / 通信ボーレート=${options.baudRate} bps / AP=1`);
-  logger("[PLAN] API モードでは宛先を API フレームで指定するため、DL は変更しません");
-
-  for (let index = 0; index < options.ports.length; index += 1) {
-    const name = options.names?.[index] ?? deviceIndexToName(index);
-    const roleLabel = plan.roles[index] === "1" ? "Coordinator" : "Router";
-    let session = null;
-
-    try {
-      session = await openCommandModeSession(options.ports[index], {
-        name,
-        candidates: baudRateCandidates,
-        logger,
-        commandTimeoutMs: options.commandTimeoutMs,
-        enterCommandTimeoutMs: options.enterCommandTimeoutMs,
-        closeTimeoutMs: options.closeTimeoutMs,
-        valueSettleTimeoutMs: options.valueSettleTimeoutMs
-      });
-      logger(`[SCAN] ${name}=${session.baudRate} bps で設定通信します`);
-      logger(`[PLAN] ${name} / ${roleLabel} / AP=1`);
-      logger(`[PLAN] ${name} の SL 読み取りは行いません。API モードでは DL ではなく API フレームで宛先を指定します`);
-
-      for (const command of plan.commandsForDevices[index]) {
-        await session.sendOkCommand(command, command.trim());
-      }
-      await session.sendOkCommand("ATWR\r", "ATWR");
-      await session.sendOkCommand("ATCN\r", "ATCN");
-      logger(`[DONE] ${name} の API モード設定を書き込みました`);
-    } finally {
-      await session?.close().catch(() => {});
-    }
-  }
-
-  logger("[DONE] API モード設定の書き込みが完了しました");
-  logger(`[NOTE] AP=1 にした後は XBee の UART 通信が API フレーム形式になります。変更を有効にするため、すべての XBee を再起動（電源 OFF/ON）してください`);
-  return {
-    normalizedPanId: plan.normalizedPanId,
-    serialLows,
-    roles: plan.roles,
-    baudRate: options.baudRate,
-    apiMode: plan.apiMode,
-    deviceCount: options.ports.length
-  };
-}
-
-/**
- * @param {SerialPort} port
- * @param {{
- *   name: string,
- *   candidates?: number[],
- *   logger?: (message: string) => void
- * }} options
- * @returns {Promise<number | null>}
- */
-export async function findWorkingBaudRate(port, options) {
   let session = null;
-
   try {
-    session = await openCommandModeSession(port, options);
-    await session.sendOkCommand("ATCN\r", "ATCN").catch(() => {});
-    return session.baudRate;
-  } catch {
-    return null;
+    ensureNotAborted(options.signal);
+    session = await openCommandModeSession(options.port, options);
+    logger(`[${options.name ?? "XBee"}] API モード設定を開始します`);
+    ensureNotAborted(options.signal);
+    logger(`[WRITE] ${options.name ?? "XBee"}: ATAP1`);
+    await session.sendOkCommand("ATAP1\r", "ATAP1");
+    logger(`[OK] ${options.name ?? "XBee"}: ATAP1`);
+    ensureNotAborted(options.signal);
+    logger(`[WRITE] ${options.name ?? "XBee"}: ATWR`);
+    await session.sendOkCommand("ATWR\r", "ATWR");
+    logger(`[OK] ${options.name ?? "XBee"}: ATWR`);
+    ensureNotAborted(options.signal);
+    logger(`[WRITE] ${options.name ?? "XBee"}: ATCN`);
+    await session.sendOkCommand("ATCN\r", "ATCN");
+    logger(`[OK] ${options.name ?? "XBee"}: ATCN`);
+    logger(`[DONE] ${options.name ?? "XBee"}: AP=1 設定が完了しました`);
+    return { name: options.name ?? "XBee", baudRate: session.baudRate, apiMode: "1" };
   } finally {
     await session?.close().catch(() => {});
   }

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>XBee Pairing GUI</title>
+    <title>XBee API モード設定</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -12,84 +12,33 @@
         <div class="panel-header">
           <div>
             <p class="eyebrow">Web Serial / XBee</p>
-            <h1 id="settings-title">XBee Pairing GUI</h1>
+            <h1 id="settings-title">XBee API モード設定</h1>
           </div>
-          <div class="status-block">
-            <span id="supportBadge" class="badge">確認中</span>
-          </div>
+          <span id="supportBadge" class="badge">確認中</span>
         </div>
-
         <p id="supportMessage" class="support-message" role="status" aria-live="polite"></p>
-
-        <form id="pairingForm" class="form-grid">
+        <form id="apiForm" class="form-grid">
           <fieldset class="field-group">
-            <legend>ポート選択</legend>
-            <div id="deviceGrid" class="device-grid">
-              <section class="device-card" aria-labelledby="device-a-title">
-                <div class="device-card-header">
-                  <h2 id="device-a-title">XBee A</h2>
-                  <span id="portAState" class="port-state">未選択</span>
-                </div>
-                <button id="selectPortAButton" class="action-button" type="button">XBee A のポートを選択</button>
-                <button id="disconnectPortAButton" class="ghost-button disconnect-button" type="button" disabled>接続を切る</button>
-                <p id="portALabel" class="port-label">ポート未選択</p>
-              </section>
-
-              <section class="device-card" aria-labelledby="device-b-title">
-                <div class="device-card-header">
-                  <h2 id="device-b-title">XBee B</h2>
-                  <span id="portBState" class="port-state">未選択</span>
-                </div>
-                <button id="selectPortBButton" class="action-button" type="button">XBee B のポートを選択</button>
-                <button id="disconnectPortBButton" class="ghost-button disconnect-button" type="button" disabled>接続を切る</button>
-                <p id="portBLabel" class="port-label">ポート未選択</p>
-              </section>
-            </div>
+            <legend>設定対象</legend>
+            <section class="device-card" aria-labelledby="device-title">
+              <div class="device-card-header">
+                <h2 id="device-title">XBee</h2>
+                <span id="portState" class="port-state">未選択</span>
+              </div>
+              <button id="selectPortButton" class="action-button" type="button">XBee のポートを選択</button>
+              <div class="device-actions">
+                <button id="disconnectPortButton" class="ghost-button disconnect-button" type="button" disabled>接続を切る</button>
+                <button id="cancelButton" class="ghost-button" type="button" disabled>処理をキャンセル</button>
+              </div>
+              <p id="portLabel" class="port-label">ポート未選択</p>
+            </section>
           </fieldset>
-
-          <label class="mode-toggle">
-            <input id="apiMode" name="apiMode" type="checkbox" />
-            <span>API モードを ON にする (ATAP=1)</span>
-          </label>
-
-          <div id="apiDeviceControls" class="api-device-controls" hidden>
-            <p class="hint">API モードでは 3 台以上の XBee を同じ PAN ID に設定します。DL は変更せず、宛先は API フレームで指定します。</p>
-            <button id="addApiDeviceButton" class="action-button" type="button">XBee を追加</button>
+          <div class="warning-box" role="note">
+            このツールは、既に通信設定済みの XBee を API モード（<code>AP=1</code>）へ変更するためのツールです。PAN ID、Coordinator/Router、宛先アドレス、通信ボーレート等の既存設定は変更しません。
           </div>
-
-          <div class="field-row">
-            <label class="field">
-              <span>ペアリング後の通信ボーレート (ATBD)</span>
-              <select id="baudRate" name="baudRate">
-                <option value="9600" selected>9600</option>
-                <option value="19200">19200</option>
-                <option value="38400">38400</option>
-                <option value="57600">57600</option>
-                <option value="115200">115200</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>PAN ID</span>
-              <input id="panId" name="panId" type="text" inputmode="text" placeholder="例: 1234ABCD" autocomplete="off" required pattern="^(0[xX])?[0-9A-Fa-f]{1,16}$" title="1〜16 桁の16進数で入力してください。0x 接頭辞は省略可能です。" />
-            </label>
-          </div>
-
-          <label class="field">
-            <span>Coordinator 選択</span>
-            <select id="coordinator" name="coordinator">
-              <option value="A">A を Coordinator / B を Router</option>
-              <option value="B">B を Coordinator / A を Router</option>
-            </select>
-          </label>
-
-          <div class="command-row">
-            <button id="runButton" class="primary-button" type="submit">ペアリング設定を書き込む</button>
-            <button id="testConnectionButton" class="action-button" type="button">接続テスト</button>
-          </div>
+          <button id="runButton" class="primary-button" type="submit">API モード (AP=1) を書き込む</button>
         </form>
       </section>
-
       <section class="panel panel-log" aria-labelledby="log-title">
         <div class="panel-header">
           <div>
@@ -100,27 +49,6 @@
         </div>
         <pre id="logOutput" class="log-output" aria-live="polite"></pre>
       </section>
-
-      <section class="panel panel-wireless" aria-labelledby="wireless-title">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">無線通信確認</p>
-            <h2 id="wireless-title">XBee 同士の送受信テスト</h2>
-          </div>
-          <button id="clearWirelessLogButton" class="ghost-button" type="button">ログを消去</button>
-        </div>
-
-        <div class="wireless-controls">
-          <label class="field wireless-message-field">
-            <span>テスト送信データ</span>
-            <input id="wirelessMessage" name="wirelessMessage" type="text" maxlength="80" value="XBee wireless test" autocomplete="off" />
-          </label>
-          <button id="runWirelessTestButton" class="primary-button" type="button">無線送受信を確認</button>
-        </div>
-        <p id="wirelessStatus" class="wireless-status" role="status" aria-live="polite">ペアリング設定後、A→B と B→A の両方向で実データを送受信します。</p>
-        <pre id="wirelessLogOutput" class="log-output wireless-log-output" aria-live="polite"></pre>
-      </section>
-
       <section class="panel panel-notes" aria-labelledby="notes-title">
         <div class="panel-header">
           <div>
@@ -129,17 +57,13 @@
           </div>
         </div>
         <ul class="notes-list">
-          <li>PC と XBee の設定通信は、XBee の現在の UART ボーレートを候補から自動検出して行います。</li>
-          <li>通常の1対1ペアリングで変更する設定は <code>ID</code>、<code>CE</code>、<code>DL</code>、<code>BD</code> です。<code>BD</code> は XBee 同士が接続機器と通信するボーレートです。</li>
-          <li>API モードでは 3 台以上を対象に <code>ID</code>、<code>CE</code>、<code>BD</code>、<code>AP=1</code> を書き込みます。<code>DL</code> は変更しません。</li>
-          <li><code>SL</code> は読み取り専用です。通常の1対1ペアリングでは相手側の <code>SL</code> を自動で <code>DL</code> に書き込みます。</li>
-          <li><code>DH</code> は変更しません。既存値が 0 以外だと通信できない可能性があります。</li>
-          <li>Function Set / Firmware は変更しません。<code>ZIGBEETHReg</code> のまま使ってください。</li>
-          <li><code>BD</code> や <code>AP</code> の変更は <code>ATWR</code> 書き込み後に XBee を再起動（電源 OFF/ON）すると有効になります。</li>
+          <li>各ポートの現在の UART ボーレートを候補から自動検出します。ボーレート設定そのものは変更しません。</li>
+          <li>検出後の AT コマンドは <code>ATAP1</code>、<code>ATWR</code>、<code>ATCN</code> だけです。</li>
+          <li>成功後、XBee は API フレーム通信になります。必要に応じて電源を再投入してください。</li>
+          <li>Chrome / Edge の HTTPS または localhost と、Web Serial 対応環境が必要です。</li>
         </ul>
       </section>
     </main>
-
     <script type="module" src="./app.js"></script>
   </body>
 </html>
