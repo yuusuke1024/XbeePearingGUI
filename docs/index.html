@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>XBee API モード設定</title>
+    <title>XBee API / 透過（AT）モード切替</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -12,7 +12,7 @@
         <div class="panel-header">
           <div>
             <p class="eyebrow">Web Serial / XBee</p>
-            <h1 id="settings-title">XBee API モード設定</h1>
+            <h1 id="settings-title">XBee API / 透過（AT）モード切替</h1>
           </div>
           <span id="supportBadge" class="badge">確認中</span>
         </div>
@@ -34,9 +34,13 @@
             </section>
           </fieldset>
           <div class="warning-box" role="note">
-            このツールは、既に通信設定済みの XBee を API モード（<code>AP=1</code>）へ変更するためのツールです。PAN ID、Coordinator/Router、宛先アドレス、通信ボーレート等の既存設定は変更しません。
+            このツールは、既に通信設定済みの XBee を API モード（<code>AP=1</code>）と透過（AT）モード（<code>AP=0</code>）の間で切り替えるためのツールです。PAN ID、Coordinator/Router、宛先アドレス、通信ボーレート等の既存設定は変更しません。
+            現在モードの自動判定は行いません。必ず現在のモードに合う方向のボタンを選んでください。透過（AP=0）機にAPI→透過を実行すると、検出用APIバイナリが透過データとして扱われる可能性があります。
           </div>
-          <button id="runButton" class="primary-button" type="submit">API モード (AP=1) を書き込む</button>
+          <div class="mode-buttons">
+            <button id="runButton" class="primary-button" type="submit">透過（AT）→ API（AP=1）</button>
+            <button id="transparentButton" class="secondary-button" type="button">API（AP=1）→ 透過（AT / AP=0）</button>
+          </div>
         </form>
       </section>
       <section class="panel panel-log" aria-labelledby="log-title">
@@ -58,8 +62,9 @@
         </div>
         <ul class="notes-list">
           <li>各ポートの現在の UART ボーレートを候補から自動検出します。ボーレート設定そのものは変更しません。</li>
-          <li>検出後の AT コマンドは <code>ATAP1</code>、<code>ATWR</code>、<code>ATCN</code> だけです。</li>
-          <li>成功後、XBee は API フレーム通信になります。必要に応じて電源を再投入してください。</li>
+          <li>透過（AT）→ API は <code>+++</code>、<code>ATAP1</code>、<code>ATWR</code>、<code>ATCN</code> を送信します。</li>
+          <li>API → 透過（AT）は検出用 <code>0x09 AP query</code> の後、設定フレームとして <code>0x09 AP=0</code>、<code>0x08 WR</code>だけを送信します。ASCIIの <code>ATAP0</code> は送信しません。</li>
+          <li>API → 透過は、このツールが作成した AP=1 のXBeeを対象とします。AP=2（エスケープAPI）は非対応です。</li>
           <li>Chrome / Edge の HTTPS または localhost と、Web Serial 対応環境が必要です。</li>
         </ul>
       </section>

@@ -1,10 +1,11 @@
-import { enableApiMode } from "./xbee.js";
+import { enableApiMode, enableTransparentMode } from "./xbee.js";
 
 const form = /** @type {HTMLFormElement} */ (document.getElementById("apiForm"));
 const selectPortButton = /** @type {HTMLButtonElement} */ (document.getElementById("selectPortButton"));
 const disconnectPortButton = /** @type {HTMLButtonElement} */ (document.getElementById("disconnectPortButton"));
 const cancelButton = /** @type {HTMLButtonElement} */ (document.getElementById("cancelButton"));
 const runButton = /** @type {HTMLButtonElement} */ (document.getElementById("runButton"));
+const transparentButton = /** @type {HTMLButtonElement} */ (document.getElementById("transparentButton"));
 const clearLogButton = /** @type {HTMLButtonElement} */ (document.getElementById("clearLogButton"));
 const supportBadge = /** @type {HTMLSpanElement} */ (document.getElementById("supportBadge"));
 const supportMessage = /** @type {HTMLParagraphElement} */ (document.getElementById("supportMessage"));
@@ -43,6 +44,7 @@ function setBusy(isBusy) {
   selectPortButton.disabled = isBusy || !supportsWebSerial();
   disconnectPortButton.disabled = isBusy || !selectedPort;
   runButton.disabled = isBusy || !selectedPort || !supportsWebSerial();
+  transparentButton.disabled = isBusy || !selectedPort || !supportsWebSerial();
   cancelButton.disabled = !isBusy;
   clearLogButton.disabled = isBusy;
 }
@@ -89,7 +91,7 @@ async function disconnectPort() {
   setBusy(false);
 }
 
-async function run() {
+async function run(direction = "to-api") {
   if (!supportsWebSerial()) {
     appendLog("Web Serial API が利用できません。対応ブラウザと安全な配信環境を確認してください。");
     return;
@@ -100,11 +102,18 @@ async function run() {
   }
   activeController = new AbortController();
   setBusy(true);
-  appendLog("API モード設定を開始します。現在のボーレートを自動検出します。");
+  appendLog(direction === "to-api"
+    ? "透過（AT）→ API（AP=1）切替を開始します。現在のボーレートを自動検出します。"
+    : "API（AP=1）→ 透過（AT / AP=0）切替を開始します。API AP queryで現在のボーレートを検出します。");
   try {
-    const result = await enableApiMode({ port: selectedPort, name: "XBee", signal: activeController.signal, logger: appendLog });
-    appendLog(`成功: AP=1 を ATWR で保存し、ATCN で終了しました (baud=${result.baudRate})。`);
-    appendLog("注意: AP=1 の反映後は API フレーム通信になります。必要に応じて XBee を再起動してください。");
+    const operation = direction === "to-api" ? enableApiMode : enableTransparentMode;
+    const result = await operation({ port: selectedPort, name: "XBee", signal: activeController.signal, logger: appendLog });
+    if (direction === "to-api") {
+      appendLog(`成功: AP=1 を ATWR で保存し、ATCN で終了しました (baud=${result.baudRate})。`);
+      appendLog("注意: AP=1 の反映後は API フレーム通信になります。必要に応じて XBee を再起動してください。");
+    } else {
+      appendLog(`成功: APIフレームのAP=0とWRを確認しました (baud=${result.baudRate})。以後は透過（AT）通信です。`);
+    }
   } catch (error) {
     appendLog(`失敗: ${formatError(error)}`);
     if (activeController.signal.aborted) appendLog("処理をキャンセルしました。ポートは解放済みです。");
@@ -122,6 +131,7 @@ cancelButton.addEventListener("click", () => {
 });
 clearLogButton.addEventListener("click", () => { logOutput.textContent = ""; });
 form.addEventListener("submit", (event) => { event.preventDefault(); void run(); });
+transparentButton.addEventListener("click", () => { void run("api-to-transparent"); });
 
 if (supportsWebSerial()) {
   navigator.serial.addEventListener("disconnect", (event) => {

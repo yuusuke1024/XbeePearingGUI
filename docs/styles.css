@@ -192,6 +192,12 @@ h2 {
   gap: 8px;
 }
 
+.mode-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 button {
   width: 100%;
   border: 1px solid var(--border);
@@ -240,6 +246,13 @@ button:disabled {
   font-size: 13px;
 }
 
+.secondary-button {
+  background: #1a2027;
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
 .log-output {
   flex: 1;
   min-height: 0;
@@ -282,5 +295,9 @@ button:disabled {
   .panel-notes {
     max-height: none;
     overflow: visible;
+  }
+
+  .mode-buttons {
+    grid-template-columns: 1fr;
   }
 }
