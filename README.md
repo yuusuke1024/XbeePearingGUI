@@ -2,6 +2,8 @@
 
 既存設定済みの XBee を1台ずつ選択し、静的な Web Serial アプリから API モード (`AP=1`) へ切り替える最小構成のGUIです。PAN ID、役割、宛先アドレス、UART ボーレートなどのネットワーク設定は変更しません。
 
+公開ページ: [XBee API モード設定 GUI](https://yuusuke1024.github.io/XbeePearingGUI/)
+
 ## 使い方
 
 1. `docs/index.html` を GitHub Pages など HTTPS の静的サイト、または localhost で配信します。
